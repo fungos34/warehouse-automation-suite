@@ -488,6 +488,94 @@ CREATE TABLE IF NOT EXISTS debug_log (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- trigger trg_return_line_split_and_lot
+DROP TRIGGER IF EXISTS trg_return_line_split_and_lot;
+CREATE TRIGGER trg_return_line_split_and_lot
+AFTER INSERT ON return_line
+BEGIN
+    -- If quantity > 1, split into multiple lines with quantity 1
+    DELETE FROM return_line
+    WHERE id = NEW.id AND NEW.quantity > 1;
+
+    INSERT INTO return_line (
+        return_order_id, item_id, lot_id, quantity, reason, refund_amount, refund_currency_id, refund_tax_id, refund_discount_id
+    )
+    SELECT
+        NEW.return_order_id,
+        NEW.item_id,
+        NULL, -- lot_id will be set below
+        1,
+        NEW.reason,
+        NEW.refund_amount,
+        NEW.refund_currency_id,
+        NEW.refund_tax_id,
+        NEW.refund_discount_id
+    FROM (
+        SELECT 1
+        FROM generate_series(1, NEW.quantity)
+    )
+    WHERE NEW.quantity > 1;
+
+    -- For each line with quantity 1 and lot_id IS NULL, create a lot and assign it
+    INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
+    SELECT
+        rl.item_id,
+        'RET-' || rl.return_order_id || '-' || rl.id || '-' || strftime('%Y%m%d%H%M%f','now'),
+        'return_order',
+        rl.return_order_id,
+        'pending',
+        'Return from customer'
+    FROM return_line rl
+    WHERE rl.return_order_id = NEW.return_order_id
+      AND rl.item_id = NEW.item_id
+      AND rl.lot_id IS NULL
+      AND rl.quantity = 1;
+
+    -- Assign the new lot to the return_line
+    UPDATE return_line
+    SET lot_id = (
+        SELECT id FROM lot
+        WHERE origin_model = 'return_order'
+          AND origin_id = return_order_id
+          AND item_id = item_id
+        ORDER BY id DESC LIMIT 1
+    )
+    WHERE return_order_id = NEW.return_order_id
+      AND item_id = NEW.item_id
+      AND lot_id IS NULL
+      AND quantity = 1;
+END;
+
+-- Trigger: on return order creation, create supply trigger
+DROP TRIGGER IF EXISTS trg_return_line_create_supply_trigger;
+CREATE TRIGGER trg_return_line_create_supply_trigger
+AFTER INSERT ON return_line
+BEGIN
+    INSERT INTO trigger (
+        origin_model,
+        origin_id,
+        trigger_type,
+        trigger_route_id,
+        trigger_item_id,
+        trigger_zone_id,
+        trigger_item_quantity,
+        trigger_lot_id,
+        type,
+        status
+    )
+    SELECT
+        'return_order',
+        NEW.return_order_id,
+        'supply',
+        (SELECT id FROM route WHERE name = 'Return Route'),
+        NEW.item_id,
+        (SELECT id FROM zone WHERE code = 'ZON09'), -- Customer Area
+        1,
+        NEW.lot_id,
+        'inbound',
+        'draft'
+    WHERE NEW.quantity = 1;
+END;
 
 -- Trigger: on stock adjustment, update stock
 DROP TRIGGER IF EXISTS trg_stock_adjustment_update_stock;
@@ -945,41 +1033,71 @@ BEGIN
     WHERE id = NEW.id;
 END;
 
-
 DROP TRIGGER IF EXISTS trg_rule_trigger_create_po_on_buy;
 CREATE TRIGGER trg_rule_trigger_create_po_on_buy
 AFTER INSERT ON rule_trigger
 WHEN (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
 BEGIN
-    -- Find or create a draft purchase order for this vendor
+    -- 1. Find or create a draft purchase order for this vendor
     INSERT INTO purchase_order (status, origin, partner_id, code)
     SELECT
         'draft',
-        'Auto-created for pull_or_buy trigger (vendor_id=' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id)) || ')',
-        (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id)),
-        'PO_AUTO_' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id)) || '_' || strftime('%Y%m%d%H%M%f','now')
+        'Auto-created for pull_or_buy trigger (vendor_id=' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) || ')',
+        (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)),
+        'PO_AUTO_' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) || '_' || strftime('%Y%m%d%H%M%f','now')
     WHERE NOT EXISTS (
         SELECT 1 FROM purchase_order po
         WHERE po.status = 'draft'
-        AND po.partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id))
+        AND po.partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
     );
 
-    -- Insert the purchase order line
-    INSERT INTO purchase_order_line (purchase_order_id, item_id, quantity, route_id)
+    -- 2. Insert or update the purchase order line for the missing quantity
+    -- First, try to update an existing line
+    UPDATE purchase_order_line
+    SET quantity = quantity + (SELECT trigger_item_quantity FROM "trigger" WHERE id = NEW.trigger_id)
+    WHERE purchase_order_id = (
+            SELECT id FROM purchase_order
+            WHERE status = 'draft'
+            AND partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
+            ORDER BY id DESC LIMIT 1
+        )
+      AND item_id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)
+      AND IFNULL(lot_id, -1) = IFNULL((SELECT trigger_lot_id FROM "trigger" WHERE id = NEW.trigger_id), -1)
+      AND route_id = (SELECT trigger_route_id FROM "trigger" WHERE id = NEW.trigger_id);
+
+    -- Then, if no line was updated, insert a new one
+    INSERT INTO purchase_order_line (
+        purchase_order_id, item_id, lot_id, quantity, route_id, price, currency_id, cost, cost_currency_id
+    )
     SELECT
         (SELECT id FROM purchase_order
          WHERE status = 'draft'
-         AND partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id))
+         AND partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
          ORDER BY id DESC LIMIT 1),
-        (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id),
-        (SELECT trigger_item_quantity FROM trigger WHERE id = NEW.trigger_id),
-        (SELECT trigger_route_id FROM trigger WHERE id = NEW.trigger_id)
-    WHERE (SELECT id FROM purchase_order
-         WHERE status = 'draft'
-         AND partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM trigger WHERE id = NEW.trigger_id))
-         ORDER BY id DESC LIMIT 1) IS NOT NULL;
+        t.trigger_item_id,
+        t.trigger_lot_id,
+        t.trigger_item_quantity,
+        t.trigger_route_id,
+        i.cost,
+        i.cost_currency_id,
+        i.cost,
+        i.cost_currency_id
+    FROM "trigger" t
+    JOIN item i ON i.id = t.trigger_item_id
+    WHERE t.id = NEW.trigger_id
+      AND NOT EXISTS (
+        SELECT 1 FROM purchase_order_line pol
+        WHERE pol.purchase_order_id = (
+                SELECT id FROM purchase_order
+                WHERE status = 'draft'
+                AND partner_id = (SELECT vendor_id FROM item WHERE id = t.trigger_item_id)
+                ORDER BY id DESC LIMIT 1
+            )
+          AND pol.item_id = t.trigger_item_id
+          AND IFNULL(pol.lot_id, -1) = IFNULL(t.trigger_lot_id, -1)
+          AND pol.route_id = t.trigger_route_id
+    );
 END;
-
 
 -- Trigger: Assign or create picking for move
 CREATE TRIGGER trg_move_assign_picking
@@ -1250,56 +1368,56 @@ BEGIN
     );
         
 
-    -- If rule is 'pull_or_buy' and not enough stock, create or update a purchase order and line for the missing quantity
+    -- -- If rule is 'pull_or_buy' and not enough stock, create or update a purchase order and line for the missing quantity
 
-    INSERT INTO purchase_order (status, origin, partner_id, code, currency_id, tax_id, discount_id)
-    SELECT
-        'draft',
-        'Auto-created for pull_or_buy (vendor_id=' || (SELECT vendor_id FROM item WHERE id = NEW.item_id) || ')',
-        (SELECT vendor_id FROM item WHERE id = NEW.item_id),
-        'PO_AUTO_' || (SELECT vendor_id FROM item WHERE id = NEW.item_id) || '_' || strftime('%Y%m%d%H%M%f','now'),
-        NULL, NULL, NULL
-    WHERE (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
-    AND NOT EXISTS (
-        SELECT 1 FROM purchase_order po
-        WHERE po.status = 'draft'
-        AND po.partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
-    );
+    -- INSERT INTO purchase_order (status, origin, partner_id, code, currency_id, tax_id, discount_id)
+    -- SELECT
+    --     'draft',
+    --     'Auto-created for pull_or_buy (vendor_id=' || (SELECT vendor_id FROM item WHERE id = NEW.item_id) || ')',
+    --     (SELECT vendor_id FROM item WHERE id = NEW.item_id),
+    --     'PO_AUTO_' || (SELECT vendor_id FROM item WHERE id = NEW.item_id) || '_' || strftime('%Y%m%d%H%M%f','now'),
+    --     NULL, NULL, NULL
+    -- WHERE (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
+    -- AND NOT EXISTS (
+    --     SELECT 1 FROM purchase_order po
+    --     WHERE po.status = 'draft'
+    --     AND po.partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
+    -- );
 
-    -- Insert or update purchase order line for the missing quantity
-    INSERT INTO purchase_order_line (purchase_order_id, item_id, quantity, route_id)
-    SELECT
-        (SELECT id FROM purchase_order
-        WHERE status = 'draft'
-        AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
-        ORDER BY id DESC LIMIT 1),
-        NEW.item_id,
-        NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0),
-        NEW.route_id
-    WHERE (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0)) > 0
-    AND (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy';
+    -- -- Insert or update purchase order line for the missing quantity
+    -- INSERT INTO purchase_order_line (purchase_order_id, item_id, quantity, route_id)
+    -- SELECT
+    --     (SELECT id FROM purchase_order
+    --     WHERE status = 'draft'
+    --     AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
+    --     ORDER BY id DESC LIMIT 1),
+    --     NEW.item_id,
+    --     NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0),
+    --     NEW.route_id
+    -- WHERE (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0)) > 0
+    -- AND (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy';
 
-    -- Optionally, if you want to update an existing PO line instead of inserting a new one for the same item:
-    UPDATE purchase_order_line
-    SET quantity = quantity + (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
-    WHERE purchase_order_id = (
-            SELECT id FROM purchase_order
-            WHERE status = 'draft'
-            AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
-            ORDER BY id DESC LIMIT 1
-        )
-    AND item_id = NEW.item_id
-    AND (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
-    AND EXISTS (
-        SELECT 1 FROM purchase_order_line
-        WHERE purchase_order_id = (
-            SELECT id FROM purchase_order
-            WHERE status = 'draft'
-                AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
-            ORDER BY id DESC LIMIT 1
-        )
-        AND item_id = NEW.item_id
-    );
+    -- -- Optionally, if you want to update an existing PO line instead of inserting a new one for the same item:
+    -- UPDATE purchase_order_line
+    -- SET quantity = quantity + (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
+    -- WHERE purchase_order_id = (
+    --         SELECT id FROM purchase_order
+    --         WHERE status = 'draft'
+    --         AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
+    --         ORDER BY id DESC LIMIT 1
+    --     )
+    -- AND item_id = NEW.item_id
+    -- AND (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
+    -- AND EXISTS (
+    --     SELECT 1 FROM purchase_order_line
+    --     WHERE purchase_order_id = (
+    --         SELECT id FROM purchase_order
+    --         WHERE status = 'draft'
+    --             AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
+    --         ORDER BY id DESC LIMIT 1
+    --     )
+    --     AND item_id = NEW.item_id
+    -- );
 
     -- 2a. If a new trigger was created and it has a rule_trigger, set move to 'waiting'
     UPDATE move
@@ -2033,9 +2151,12 @@ JOIN partner p ON i.vendor_id = p.id AND p.partner_type = 'vendor'
 JOIN location l ON l.partner_id = p.id;
 
 
+
+
 -- Routes (set active=1 for all initial routes)
 INSERT INTO route (name, description, active) VALUES
-('Default', 'Default route for receiving and shipping goods', 1);
+('Default', 'Default route for receiving and shipping goods', 1),
+('Return Route', 'Route for customer returns with quality check', 1);
 
 -- Rules (set active=1 for all initial rules)
 INSERT INTO rule (
@@ -2052,6 +2173,10 @@ INSERT INTO rule (
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON03'), (SELECT id FROM zone WHERE code='ZON04'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON04'), (SELECT id FROM zone WHERE code='ZON09'), 0, 1);
 
+-- Rules for the return route: Customer Area → Input → Quality → Stock
+INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
+((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
+((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON02'), 0, 1);
 
 -- Sale order with currency, tax, and discount at creation
 -- INSERT INTO sale_order (
