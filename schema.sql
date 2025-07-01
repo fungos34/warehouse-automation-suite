@@ -1565,7 +1565,7 @@ FROM stock s
 LEFT JOIN lot l ON s.lot_id = l.id;
 
 -- AVAILABLE LOTS VIEW
-DROP VIEW IF NOT EXISTS available_lots;
+DROP VIEW IF EXISTS available_lots;
 CREATE VIEW IF NOT EXISTS available_lots AS
 SELECT
     s.item_id,
