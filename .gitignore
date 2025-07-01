@@ -1,0 +1,47 @@
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# SQLite database
+*.db
+*.sqlite3
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+venv_wsl/
+
+# VS Code and other IDE/editor files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Static analysis/mypy/misc
+.mypy_cache/
+.pytest_cache/
+.coverage
+.tox/
+
+# Node (if frontend assets are used)
+node_modules/
+dist/
+build/
+
+# Compiled frontend artifacts (if using a bundler)
+*.bundle.js
+*.min.js
+*.map

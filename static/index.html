@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Warehouse 3D Graph Visualization (Live Data)</title>
+<link rel="stylesheet" href="static/css/style.css">
+
+</head>
+<body>
+  <button id="refresh-btn">Refresh</button>
+  <div id="panel-toggles" style="position:absolute;top:50px;left:10px;z-index:11;">
+    <button id="toggle-customer">Customer Panel</button><br>
+    <button id="toggle-warehouse">Warehouse Panel</button><br>
+    <button id="toggle-inbound">Inbound Panel</button><br>
+    <button id="toggle-sales">Sales Panel</button>
+  </div>
+  <div id="3d-graph"></div>
+
+  <!-- Add this to your <body> before the <script> tag -->
+  <div id="login-modal" style="position:absolute;top:20px;left:50%;transform:translateX(-50%);background:#fff;padding:20px;z-index:1000;display:none;">
+    <h3>Login</h3>
+    <input id="login-username" placeholder="Username"><br>
+    <input id="login-password" type="password" placeholder="Password"><br>
+    <button id="login-btn">Login</button>
+    <span id="login-error" style="color:red"></span>
+  </div>
+
+  <!-- Customer Panel (Shopping Cart Style) -->
+  <div id="customer-panel" class="side-panel">
+    <h3>Shop</h3>
+    <div id="item-list"></div>
+    
+    <hr style="margin:20px 0;">
+    <h4>Cart</h4>
+    <div id="cart-list"></div>
+    <button id="buy-btn">Buy</button>
+    <div id="buy-result"></div>
+    
+    <hr style="margin:20px 0;">
+    <h4>Return</h4>
+    <button onclick="startReturnOrderByCode('sale_order')">Return by Sale Order Code</button>
+    
+    <hr style="margin:20px 0;">
+    <h4>Your Return Orders</h4>
+    <div id="customer-return-orders-list"></div>
+  </div>
+
+  <!-- Warehouse Panel -->
+  <div id="warehouse-panel" class="side-panel">
+    <div class="panel-drag-handle" style="cursor:move;user-select:none;margin:-15px -15px 10px -15px;padding:8px 0 0 8px;font-weight:bold;">☰</div>
+    <h3>Warehouse Panel</h3>
+    <div id="intervention-list" style="margin-top:20px;">
+      <h4>Unresolved Interventions</h4>
+      <div id="interventions"></div>
+    </div>
+    <div id="transfer-order-panel" style="margin-top:20px;">
+      
+    <hr style="margin:20px 0;">
+  <h4>Create Transfer Order</h4>
+  <form id="transfer-order-form">
+    <select id="transfer-item-select"></select>
+    <input type="number" id="transfer-quantity" min="1" placeholder="Quantity" />
+    <select id="transfer-target-zone"></select>
+    <button type="button" onclick="addTransferOrderLine()">Add Line</button>
+    <button type="button" onclick="confirmTransferOrder()">Confirm Order</button>
+  </form>
+  <div id="transfer-order-lines"></div>
+</div>
+
+    <hr style="margin:20px 0;">
+<!-- Stock Adjustment Section -->
+<div id="stock-adjustment-section">
+  <h4>Stock Adjustment</h4>
+  <form id="stock-adjustment-form">
+    <label for="adjustment-item-select">Item:</label>
+    <select id="adjustment-item-select"></select><br>
+    <label for="adjustment-location-select">Location:</label>
+    <select id="adjustment-location-select"></select><br>
+    <label for="adjustment-delta">Quantity Change (Δ):</label>
+    <input type="number" id="adjustment-delta" required><br>
+    <label for="adjustment-reason">Reason:</label>
+    <input type="text" id="adjustment-reason" required><br>
+    <button type="submit">Adjust Stock</button>
+  </form>
+  <div id="stock-adjustment-result"></div>
+</div>
+    <hr style="margin:20px 0;">
+<h4>Fulfill Move Lines</h4>
+<form id="move-done-form">
+  <label for="picking-select">Select Picking:</label><br>
+  <select id="picking-select"></select>
+  <br>
+  <label for="move-line-select">Select Move Line to Fulfill:</label><br>
+  <select id="move-line-select"></select>
+  <button type="submit">Set Done</button>
+</form>
+<div id="move-result"></div>
+  </div>
+
+  <!-- Inbound Panel (Shop Style) -->
+  <div id="inbound-panel" class="side-panel">
+    <div class="panel-drag-handle" style="cursor:move;user-select:none;margin:-15px -15px 10px -15px;padding:8px 0 0 8px;font-weight:bold;">☰</div>
+    
+    <h3>Inbound Purchase (Vendor Shop)</h3>
+    <div id="inbound-item-list"></div>
+    
+    <hr style="margin:20px 0;">
+    <h4>Cart (per Vendor)</h4>
+    <div id="inbound-cart-list"></div>
+    <button id="inbound-buy-btn">Create & Confirm Purchase Orders</button>
+    <div id="inbound-buy-result"></div>
+
+    <hr style="margin:20px 0;">
+    <!-- Confirm Existing Purchase Order -->
+    <div style="margin-top:20px;">
+      <h4>Confirm Existing Purchase Order</h4>
+        <form id="confirm-po-form">
+          <label for="confirm-po-id">Select PO:</label><br>
+          <select id="confirm-po-id"></select>
+          <button type="submit">Confirm</button>
+          <button type="button" id="cancel-po-btn">Cancel</button>
+        </form>
+      <div id="po-confirm-result"></div>
+    </div>
+    
+<hr style="margin:20px 0;">
+    <!-- New: Select for downloading specific sale order -->
+    <div style="margin-top:10px;">
+      <label for="download-po-id">Select Purchase Order for Download:</label>
+      <select id="download-po-id"></select>
+    </div>
+    <div id="purchase-download-buttons" style="margin-top:10px;">
+      <button type="button" id="download-po-bill-btn">Download Bill (PDF)</button>
+      <button type="button" id="download-po-shipping-btn">Download Delivery Bill (PDF)</button>
+      <button type="button" id="download-po-label-btn">Download Carrier Label (PDF)</button>
+    </div>
+
+    <hr style="margin:20px 0;">
+    
+    <div style="margin-top:20px;">
+      <h4>Return Orders</h4>
+      <div id="return-orders-list"></div>
+    </div>
+  </div>
+
+  <!-- Sales Panel -->
+  <div id="sales-panel" class="side-panel">
+    <div class="panel-drag-handle" style="cursor:move;user-select:none;margin:-15px -15px 10px -15px;padding:8px 0 0 8px;font-weight:bold;">☰</div>
+    <h3>Sales Panel</h3>
+    <form id="sales-query-form">
+      <button type="submit">Update Sale Orders</button>
+    </form>
+    <div id="sales-orders-list"></div>
+      <form id="confirm-sale-form" style="margin-top:10px;">
+        <label for="confirm-sale-id">Confirm Sale Order:</label><br>
+        <select id="confirm-sale-id"></select>
+        <button type="submit">Confirm</button>
+        <button type="button" id="cancel-sale-btn">Cancel</button>
+      </form>
+    <div id="sales-result"></div>
+
+    <hr style="margin:20px 0;">
+    <!-- New: Select for downloading specific sale order -->
+    <div style="margin-top:10px;">
+      <label for="download-sale-order-id">Select Sale Order for Download:</label>
+      <select id="download-sale-order-id"></select>
+    </div>
+    <div id="sales-download-buttons" style="margin-top:10px;">
+      <button type="button" id="download-sale-bill-btn">Download Bill</button>
+      <button type="button" id="download-sale-shipping-btn">Download Delivery Bill</button>
+      <button type="button" id="download-sale-label-btn">Download Label</button>
+    </div>
+  </div>
+
+  <!-- New Customer Details Form (hidden by default) -->
+  <div id="customer-form" style="display:none;">
+    <h4>Enter your details</h4>
+    <form id="partner-form">
+      <input id="partner-name" placeholder="Full Name" required><br>
+      <input id="partner-email" placeholder="Email" required><br>
+      <input id="partner-phone" placeholder="Phone" required><br>
+      <input id="partner-street" placeholder="Shipping Street" required><br>
+      <input id="partner-city" placeholder="Shipping City" required><br>
+      <input id="partner-zip" placeholder="Shipping ZIP" required><br>
+      <input id="partner-country" placeholder="Shipping Country" required><br>
+      <input id="partner-billing-street" placeholder="Billing Street" required><br>
+      <input id="partner-billing-city" placeholder="Billing City" required><br>
+      <input id="partner-billing-zip" placeholder="Billing ZIP" required><br>
+      <input id="partner-billing-country" placeholder="Billing Country" required><br>
+      <button type="submit">Confirm</button>
+      <button type="button" id="partner-cancel-btn" style="margin-left:10px;">Cancel</button>
+    </form>
+    <div id="partner-error" style="color:red"></div>
+  </div>
+
+  <!-- Overlay for customer form -->
+  <div id="customer-form-overlay" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.25);z-index:1999;"></div>
+
+    <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/3d-force-graph"></script>
+    <script src="static/js/main.js"></script>
+    <script src="static/js/customer.js"></script>
+    <script src="static/js/sales.js"></script>
+    <script src="static/js/inbound.js"></script>
+    <script src="static/js/warehouse.js"></script>
+    <script src="static/js/returns.js"></script>
+</body>
+</html>

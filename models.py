@@ -1,0 +1,77 @@
+from pydantic import BaseModel, Field
+from enum import Enum
+from typing import List, Literal, Optional
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ActionEnum(str, Enum):
+    pull = "pull"
+    push = "push"
+    buy = "buy"
+
+class OperationTypeEnum(str, Enum):
+    inbound = "inbound"
+    outbound = "outbound"
+    internal = "internal"
+
+class OrderLineIn(BaseModel):
+    quantity: int = Field(..., example=10)
+    item_id: int = Field(..., example=1)
+    price: float = Field(..., example=12.50)
+    currency_id: int = Field(..., example=1)
+    cost: float = Field(..., example=7.00)
+    cost_currency_id: int = Field(..., example=1)
+
+class TransferOrderLineIn(BaseModel):
+    item_id: int
+    quantity: int
+    target_zone_id: int
+
+class PurchaseOrderLineIn(BaseModel):
+    item_id: int = Field(..., example=1)
+    quantity: float = Field(..., example=100)
+    route_id: int = Field(..., example=1)
+    price: float = Field(..., example=7.50)
+    currency_id: int = Field(..., example=1)
+    cost: float = Field(..., example=7.00)
+    cost_currency_id: int = Field(..., example=1)
+
+class PartnerCreate(BaseModel):
+    name: str
+    email: str
+    phone: str
+    street: str
+    city: str
+    zip: str
+    country: str
+    billing_street: str
+    billing_city: str
+    billing_zip: str
+    billing_country: str
+    partner_type: str
+
+class SaleOrderCreate(BaseModel):
+    code: str = ""
+    partner_id: int
+
+class PurchaseOrderCreate(BaseModel):
+    partner_id: int
+    code: str = ""
+
+class TransferOrderCreate(BaseModel):
+    partner_id: int
+
+class ReturnLineIn(BaseModel):
+    item_id: int
+    lot_id: Optional[int] = None
+    quantity: int
+    reason: str = ""
+    price: float = 0.0
+
+class ReturnOrderCreate(BaseModel):
+    origin_model: Literal["sale_order", "purchase_order"]
+    origin_code: str
+    lines: List[ReturnLineIn]

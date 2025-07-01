@@ -1,0 +1,49 @@
+
+body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+#3d-graph { width: 100vw; height: 100vh; background: #222; }
+#refresh-btn { position: absolute; top: 10px; left: 10px; z-index: 10; }
+
+.side-panel {
+    position: absolute;
+    right: 10px;
+    width: 270px;
+    background: rgba(255,255,255,0.95);
+    padding: 15px;
+    z-index: 1001;
+    min-width: 250px;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    margin-bottom: 15px;
+}
+#customer-panel { top: 10px; }
+#warehouse-panel { top: 300px; }
+#inbound-panel { top: 540px; }
+#sales-panel { top: 700px; }
+
+#customer-panel, #warehouse-panel, #inbound-panel, #sales-panel { display: block; }
+
+.panel-drag-handle {
+    cursor: move;
+    user-select: none;
+    background: transparent;
+}
+
+#customer-form {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    z-index: 2000;
+    padding: 24px 24px 12px 24px;
+    border-radius: 10px;
+    box-shadow: 0 4px 32px rgba(0,0,0,0.25);
+    min-width: 320px;
+}
+#customer-form[hidden] {
+    display: none !important;
+}
+#customer-form form input {
+    margin-bottom: 6px;
+    width: 95%;
+}

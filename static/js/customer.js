@@ -1,0 +1,154 @@
+
+let cart = {};
+let pendingBuy = false;
+let pendingCart = {};
+
+
+async function loadItems() {
+    try {
+    const resp = await fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } });
+    if (!resp.ok) throw new Error('Could not load items');
+    const items = await resp.json();
+    if (!Array.isArray(items)) throw new Error('Invalid items data');
+    const itemList = document.getElementById('item-list');
+    itemList.innerHTML = '<ul>' + items.map(item => `
+        <li>
+        <b>${item.name}</b> (${item.sku})<br>
+        ${item.sales_price} ${item.sales_currency_code}
+        <button onclick="addToCart(${item.id}, '${item.name}', ${item.sales_price}, '${item.sales_currency_code}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1})">Add to Cart</button>
+        </li>
+    `).join('') + '</ul>';
+    } catch (e) {
+    document.getElementById('item-list').innerHTML = `<span style="color:red">Error loading items: ${e.message}</span>`;
+    }
+}
+
+function renderCart() {
+    const cartList = document.getElementById('cart-list');
+    if (Object.keys(cart).length === 0) {
+    cartList.innerHTML = '<i>Cart is empty</i>';
+    return;
+    }
+    cartList.innerHTML = '<ul>' + Object.values(cart).map(item => `
+    <li>
+        ${item.name} (${item.price} ${item.currency}) x 
+        <input type="number" min="1" value="${item.qty}" style="width:40px" onchange="updateCartQty(${item.id}, this.value)">
+        <button onclick="removeFromCart(${item.id})">Remove</button>
+    </li>
+    `).join('') + '</ul>';
+};
+
+
+document.getElementById('buy-btn').onclick = function() {
+    if (Object.keys(cart).length === 0) {
+    document.getElementById('buy-result').textContent = 'Cart is empty!';
+    return;
+    }
+    // Show partner form as modal
+    document.getElementById('customer-form').style.display = 'block';
+    document.getElementById('customer-form-overlay').style.display = 'block';
+    // Optionally focus first input
+    document.getElementById('partner-name').focus();
+    pendingBuy = true;
+    pendingCart = { ...cart };
+};
+
+document.getElementById('partner-form').onsubmit = async function(e) {
+    e.preventDefault();
+    if (!pendingBuy) return;
+    document.getElementById('partner-error').textContent = '';
+    // Gather partner data
+    const partner = {
+    name: document.getElementById('partner-name').value,
+    email: document.getElementById('partner-email').value,
+    phone: document.getElementById('partner-phone').value,
+    street: document.getElementById('partner-street').value,
+    city: document.getElementById('partner-city').value,
+    zip: document.getElementById('partner-zip').value,
+    country: document.getElementById('partner-country').value,
+    billing_street: document.getElementById('partner-billing-street').value,
+    billing_city: document.getElementById('partner-billing-city').value,
+    billing_zip: document.getElementById('partner-billing-zip').value,
+    billing_country: document.getElementById('partner-billing-country').value,
+    partner_type: 'customer'
+    };
+    try {
+    // 1. Create partner
+    const resp = await fetch('/partners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        body: JSON.stringify(partner)
+    });
+    const partnerData = await resp.json();
+    if (!resp.ok) throw new Error(partnerData.detail || 'Failed to create customer');
+    // 2. Create sale order
+    const orderResp = await fetch('/sale-orders/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        body: JSON.stringify({ partner_id: partnerData.id, code: '' })
+    });
+    const order = await orderResp.json();
+    if (!orderResp.ok) throw new Error(order.detail || 'Failed to create order');
+    const orderId = order.order_id; // <-- Use this!
+    // 3. Add order lines
+        const lines = Object.values(pendingCart).map(item => ({
+            quantity: item.qty,
+            item_id: item.id,
+            price: item.price || 0,
+            currency_id: item.currency_id || 1,
+            cost: item.cost || 0,
+            cost_currency_id: item.cost_currency_id || item.currency_id || 1
+        }));
+        const lineResp = await fetch(`/sale-orders/${orderId}/lines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        body: JSON.stringify(lines)
+        });
+        if (!lineResp.ok) throw new Error('Failed to add order lines');
+    // 4. Show payment reference
+    const ref = `${order.code}-${orderId.toString(36).toUpperCase().slice(-5)}`;
+    document.getElementById('buy-result').innerHTML = `
+        Order placed!<br>
+        Payment reference: <b>${ref}</b><br>
+        <button onclick="downloadSaleOrder(${orderId})">Download Sale Order #${orderId}</button>
+
+    `;
+    cart = {};
+    renderCart();
+    loadItems();
+    document.getElementById('customer-form').style.display = 'none';
+    document.getElementById('customer-form-overlay').style.display = 'none';
+    pendingBuy = false;
+    pendingCart = {};
+    } catch (e) {
+    document.getElementById('partner-error').textContent = e.message || 'Error placing order';
+    }
+};
+
+document.getElementById('partner-cancel-btn').onclick = function() {
+    document.getElementById('customer-form').style.display = 'none';
+    document.getElementById('customer-form-overlay').style.display = 'none';
+    pendingBuy = false;
+    pendingCart = {};
+};
+
+window.addToCart = function(id, name, price, currency, currency_id, cost, cost_currency_id) {
+    if (!cart[id]) cart[id] = { id, name, price, currency, currency_id, cost, cost_currency_id, qty: 0 };
+    cart[id].qty += 1;
+    renderCart();
+};
+
+window.updateCartQty = function(id, qty) {
+    if (qty < 1) { removeFromCart(id); return; }
+    cart[id].qty = parseInt(qty);
+    renderCart();
+};
+
+window.removeFromCart = function(id) {
+    delete cart[id];
+    renderCart();
+};
+
+// Initial load
+loadItems();
+renderCart();
