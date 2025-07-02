@@ -253,7 +253,7 @@ def get_zones(username: str = Depends(get_current_username)):
         return [dict(row) for row in result]
 
 @router.get("/items", tags=["Catalog"])
-def get_items(username: str = Depends(get_current_username)):
+def get_items(): # username: str = Depends(get_current_username)
     with get_conn() as conn:
         # Get the current price list (for sales price)
         price_list = conn.execute("""

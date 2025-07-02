@@ -7,7 +7,7 @@ router = APIRouter()
 
 
 @router.post("/partners", tags=["Partners"])
-def create_partner(partner: PartnerCreate, username: str = Depends(get_current_username)):
+def create_partner(partner: PartnerCreate):  # username: str = Depends(get_current_username)
     with get_conn() as conn:
         cur = conn.execute("""
             INSERT INTO partner 

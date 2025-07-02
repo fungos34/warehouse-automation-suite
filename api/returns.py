@@ -20,7 +20,7 @@ from auth import get_current_username
 router = APIRouter()
 
 @router.get("/return-orders/", tags=["Returns"])
-def list_return_orders(username: str = Depends(get_current_username)):
+def list_return_orders():  # username: str = Depends(get_current_username)
     with get_conn() as conn:
         result = conn.execute("""
             SELECT ro.*, p.name as partner_name
@@ -45,7 +45,7 @@ def cancel_return_order(return_order_id: int, username: str = Depends(get_curren
     return {"message": "Return order cancelled"}
 
 @router.get("/return-orders/{return_order_id}/lines", tags=["Returns"])
-def get_return_order_lines(return_order_id: int, username: str = Depends(get_current_username)):
+def get_return_order_lines(return_order_id: int):  # username: str = Depends(get_current_username)
     with get_conn() as conn:
         result = conn.execute(
             "SELECT * FROM return_line WHERE return_order_id = ? ORDER BY id", (return_order_id,)
@@ -54,7 +54,7 @@ def get_return_order_lines(return_order_id: int, username: str = Depends(get_cur
 
 
 @router.post("/return-orders/", tags=["Returns"])
-def create_return_order(data: ReturnOrderCreate, username: str = Depends(get_current_username)):
+def create_return_order(data: ReturnOrderCreate):  # username: str = Depends(get_current_username)
     with get_conn() as conn:
         # 1. Find the origin order by code and model, and check status
         if data.origin_model not in ("sale_order", "purchase_order"):
@@ -361,7 +361,7 @@ def print_return_bill(return_order_id: int, username: str = Depends(get_current_
     )
 
 @router.get("/return-orders/{return_order_id}/print-label", tags=["Returns"])
-def print_return_label(return_order_id: int, username: str = Depends(get_current_username)):
+def print_return_label(return_order_id: int):  #  username: str = Depends(get_current_username)
     with get_conn() as conn:
         order = conn.execute("SELECT * FROM return_order WHERE id = ?", (return_order_id,)).fetchone()
         if not order:

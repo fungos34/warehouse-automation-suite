@@ -42,6 +42,26 @@ def create_sale_order(order: SaleOrderCreate):
         conn.commit()
         return {"order_id": cur.lastrowid, "code": code}
 
+@router.get("/sale-orders/by-code/{order_number}", tags=["Sales"])
+def get_sale_order_by_code(order_number: str):
+    with get_conn() as conn:
+        order = conn.execute(
+            "SELECT so.*, p.name as partner_name FROM sale_order so LEFT JOIN partner p ON so.partner_id = p.id WHERE so.code = ?",
+            (order_number,)
+        ).fetchone()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        lines = conn.execute(
+            "SELECT ol.*, i.name as item_name, c.code as currency_code FROM order_line ol JOIN item i ON ol.item_id = i.id LEFT JOIN currency c ON ol.currency_id = c.id WHERE ol.order_id = ?",
+            (order["id"],)
+        ).fetchall()
+        return {
+            "id": order["id"],
+            "code": order["code"],
+            "status": order["status"],
+            "partner_name": order["partner_name"],
+            "lines": [dict(line) for line in lines]
+        }
 
 @router.post("/sale-orders/{order_id}/lines", tags=["Sales"])
 def add_order_lines(order_id: int, lines: List[OrderLineIn]):
@@ -150,9 +170,12 @@ def create_checkout_session(data: CreateSessionRequest):
         line_items=stripe_line_items,
         mode='payment',
         customer_email=data.email,
-        success_url=f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base_url}",
-        metadata={"order_number": data.order_number}
+        success_url=f"{base_url}shop/{data.order_number}/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{base_url}shop/{data.order_number}/cancel",
+        metadata={"order_number": data.order_number},
+        payment_intent_data={
+        "description": f"{data.order_number}"
+    }
     )
     return {"checkout_url": session.url}
 

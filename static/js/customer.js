@@ -6,20 +6,20 @@ let pendingCart = {};
 
 async function loadItems() {
     try {
-    const resp = await fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } });
-    if (!resp.ok) throw new Error('Could not load items');
-    const items = await resp.json();
-    if (!Array.isArray(items)) throw new Error('Invalid items data');
-    const itemList = document.getElementById('item-list');
-    itemList.innerHTML = '<ul>' + items.map(item => `
-        <li>
-        <b>${item.name}</b> (${item.sku})<br>
-        ${item.sales_price} ${item.sales_currency_code}
-        <button onclick="addToCart(${item.id}, '${item.name}', ${item.sales_price}, '${item.sales_currency_code}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1})">Add to Cart</button>
-        </li>
-    `).join('') + '</ul>';
+        const resp = await fetch('/items');
+        if (!resp.ok) throw new Error('Could not load items');
+        const items = await resp.json();
+        if (!Array.isArray(items)) throw new Error('Invalid items data');
+        const itemList = document.getElementById('item-list');
+        itemList.innerHTML = '<ul>' + items.map(item => `
+            <li>
+            <b>${item.name}</b> (${item.sku})<br>
+            ${item.sales_price} ${item.sales_currency_code}
+            <button onclick="addToCart(${item.id}, '${item.name}', ${item.sales_price}, '${item.sales_currency_code}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1})">Add to Cart</button>
+            </li>
+        `).join('') + '</ul>';
     } catch (e) {
-    document.getElementById('item-list').innerHTML = `<span style="color:red">Error loading items: ${e.message}</span>`;
+        document.getElementById('item-list').innerHTML = `<span style="color:red">Error loading items: ${e.message}</span>`;
     }
 }
 
@@ -76,7 +76,7 @@ document.getElementById('partner-form').onsubmit = async function(e) {
     // 1. Create partner
     const resp = await fetch('/partners', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(partner)
     });
     const partnerData = await resp.json();
@@ -84,43 +84,35 @@ document.getElementById('partner-form').onsubmit = async function(e) {
     // 2. Create sale order
     const orderResp = await fetch('/sale-orders/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ partner_id: partnerData.id, code: '' })
     });
     const order = await orderResp.json();
     if (!orderResp.ok) throw new Error(order.detail || 'Failed to create order');
-    const orderId = order.order_id; // <-- Use this!
-    // 3. Add order lines
-        const lines = Object.values(pendingCart).map(item => ({
-            quantity: item.qty,
-            item_id: item.id,
-            price: item.price || 0,
-            currency_id: item.currency_id || 1,
-            cost: item.cost || 0,
-            cost_currency_id: item.cost_currency_id || item.currency_id || 1
-        }));
-        const lineResp = await fetch(`/sale-orders/${orderId}/lines`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
-        body: JSON.stringify(lines)
-        });
-        if (!lineResp.ok) throw new Error('Failed to add order lines');
-        
-    // 4. Show payment reference
-    const ref = `${order.code}-${orderId.toString(36).toUpperCase().slice(-5)}`;
-    document.getElementById('buy-result').innerHTML = `
-        Order placed!<br>
-        Payment reference: <b>${ref}</b><br>
-        <button onclick="downloadSaleOrder(${orderId})">Download Sale Order #${orderId}</button>
+    const orderId = order.order_id;
 
-    `;
+    // 3. Add order lines
+    const lines = Object.values(pendingCart).map(item => ({
+        quantity: item.qty,
+        item_id: item.id,
+        price: item.price || 0,
+        currency_id: item.currency_id || 1,
+        cost: item.cost || 0,
+        cost_currency_id: item.cost_currency_id || item.currency_id || 1
+    }));
+    const lineResp = await fetch(`/sale-orders/${orderId}/lines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lines)
+    });
+    if (!lineResp.ok) throw new Error('Failed to add order lines');
 
     // 5. Create Stripe Checkout session
     const checkoutResp = await fetch('/create-checkout-session', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            order_number: order.code, // or order_id if your backend expects it
+            order_number: order.code,
             email: partner.email
         })
     });

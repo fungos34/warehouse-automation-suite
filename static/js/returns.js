@@ -4,34 +4,33 @@ async function startReturnOrderByCode(originModel, code = null) {
         if (!code) return;
     }
     // 1. Fetch order by code
-    const orders = await fetch(`/${originModel.replace('_', '-') + 's'}?code=${code}`, {
-    headers: { Authorization: 'Bearer ' + jwtToken }
-    }).then(r => r.json());
+    const orders = await fetch(`/${originModel.replace('_', '-') + 's'}?code=${code}`)
+        .then(r => r.json());
 
     // Your /sale-orders and /purchase-orders endpoints return arrays
     const order = Array.isArray(orders) ? orders.find(o => o.code === code) : null;
     if (!order || order.status !== 'confirmed') {
-    alert('Order not found or not confirmed');
-    return;
+        alert('Order not found or not confirmed');
+        return;
     }
 
     // 2. Fetch order lines
     let linesUrl = '';
     if (originModel === 'sale_order') {
-    linesUrl = `/sale-orders/${order.id}/lines`;
+        linesUrl = `/sale-orders/${order.id}/lines`;
     } else if (originModel === 'purchase_order') {
-    linesUrl = `/purchase-orders/${order.id}/lines`;
+        linesUrl = `/purchase-orders/${order.id}/lines`;
     } else {
-    alert('Unsupported origin model');
-    return;
+        alert('Unsupported origin model');
+        return;
     }
-    const lines = await fetch(linesUrl, { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json());
+    const lines = await fetch(linesUrl).then(r => r.json());
 
     // 3. Build a simple form for return quantities
     let formHtml = `<form id="return-lines-form"><h4>Return Items for ${code}</h4>`;
     lines.forEach((line, idx) => {
-    const lotInfo = line.lot_id ? ` (Lot: ${line.lot_id})` : '';
-    formHtml += `
+        const lotInfo = line.lot_id ? ` (Lot: ${line.lot_id})` : '';
+        formHtml += `
         <div>
         <label>
             ${line.item_id}${lotInfo} - Max: ${line.quantity}
@@ -57,51 +56,51 @@ async function startReturnOrderByCode(originModel, code = null) {
     document.body.appendChild(modal);
 
     modal.querySelector('form').onsubmit = async function(e) {
-    e.preventDefault();
-    const returnLines = [];
-    lines.forEach((line, idx) => {
-        const qty = parseInt(this[`qty${idx}`].value, 10);
-        for (let i = 0; i < qty; i++) {
-            returnLines.push({
-                item_id: line.item_id,
-                lot_id: line.lot_id || null,
-                quantity: 1,
-                reason: '',
-                price: line.price // <-- add this if your backend supports it
-            });
+        e.preventDefault();
+        const returnLines = [];
+        lines.forEach((line, idx) => {
+            const qty = parseInt(this[`qty${idx}`].value, 10);
+            for (let i = 0; i < qty; i++) {
+                returnLines.push({
+                    item_id: line.item_id,
+                    lot_id: line.lot_id || null,
+                    quantity: 1,
+                    reason: '',
+                    price: line.price // <-- add this if your backend supports it
+                });
+            }
+        });
+        if (!returnLines.length) {
+            alert('No items selected for return.');
+            return;
         }
-    });
-    if (!returnLines.length) {
-        alert('No items selected for return.');
-        return;
-    }
-    // 4. Submit return order
-    const resp = await fetch('/return-orders/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
-        body: JSON.stringify({
-        origin_model: originModel,
-        origin_code: code,
-        lines: returnLines
-        })
-    });
-    const data = await resp.json();
-    if (resp.ok) {
-        alert('Return order created!');
-        document.body.removeChild(modal);
-    } else {
-        alert(JSON.stringify(data.detail) || 'Error creating return order');
-    }
+        // 4. Submit return order
+        const resp = await fetch('/return-orders/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                origin_model: originModel,
+                origin_code: code,
+                lines: returnLines
+            })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert('Return order created!');
+            document.body.removeChild(modal);
+        } else {
+            alert(JSON.stringify(data.detail) || 'Error creating return order');
+        }
     };
-};
+}
 
 async function loadReturnOrders() {
-    const resp = await fetch('/return-orders/', { headers: { Authorization: 'Bearer ' + jwtToken } });
+    const resp = await fetch('/return-orders/', { headers: { 'Content-Type': 'application/json' } });
     const orders = await resp.json();
     const div = document.getElementById('return-orders-list');
     if (!orders.length) {
-    div.innerHTML = '<i>No return orders.</i>';
-    return;
+        div.innerHTML = '<i>No return orders.</i>';
+        return;
     }
     div.innerHTML = '<ul>' + orders.map(o => `
     <li>
@@ -113,17 +112,17 @@ async function loadReturnOrders() {
         <button onclick="downloadReturnBill(${o.id}, '${o.code}')">Download Refund Bill</button>
     </li>
     `).join('') + '</ul>';
-};
+}
 
 async function loadCustomerReturnOrders() {
-    const resp = await fetch('/return-orders/', { headers: { Authorization: 'Bearer ' + jwtToken } });
+    const resp = await fetch('/return-orders/', { headers: { 'Content-Type': 'application/json' } });
     const orders = await resp.json();
     // Optionally filter for this customer if needed
     // const myOrders = orders.filter(o => o.partner_id === currentCustomerId);
     const div = document.getElementById('customer-return-orders-list');
     if (!orders.length) {
-    div.innerHTML = '<i>No return orders.</i>';
-    return;
+        div.innerHTML = '<i>No return orders.</i>';
+        return;
     }
     div.innerHTML = '<ul>' + orders.map(o => `
     <li>
@@ -131,8 +130,7 @@ async function loadCustomerReturnOrders() {
         <button onclick="downloadReturnLabel(${o.id}, '${o.code}')">Print Return Label</button>
     </li>
     `).join('') + '</ul>';
-};
-
+}
 
 window.confirmReturnOrder = async function(id) {
     await fetch(`/return-orders/${id}/confirm`, { method: 'POST', headers: { Authorization: 'Bearer ' + jwtToken } });
@@ -156,7 +154,7 @@ window.downloadReturnOrder = async function(id) {
 };
 
 window.downloadReturnLabel = async function(id, code) {
-    const resp = await fetch(`/return-orders/${id}/print-label`, { headers: { Authorization: 'Bearer ' + jwtToken } });
+    const resp = await fetch(`/return-orders/${id}/print-label`);
     const blob = await resp.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
