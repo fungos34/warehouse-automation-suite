@@ -4,6 +4,9 @@ from fastapi.staticfiles import StaticFiles
 from api import sales_router, purchase_router, returns_router, warehouse_router, users_router, partners_router, frontend_router
 from contextlib import asynccontextmanager
 from database import initialize_database
+from dotenv import load_dotenv
+
+load_dotenv()  # loads environmental variables from .env file
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
+import stripe
 from typing import List
 from database import get_conn
-from models import SaleOrderCreate, OrderLineIn
+from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest
 from auth import get_current_username
 from reportlab.lib.pagesizes import A4, A7
 from reportlab.lib import colors
@@ -14,7 +15,9 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 from utils import add_page_number_and_qr
+from run import base_url, endpoint_secret, stripe_api_key
 
+stripe.api_key = stripe_api_key
 
 router = APIRouter()
 
@@ -104,6 +107,80 @@ def get_sale_order_lines(order_id: int, username: str = Depends(get_current_user
         return [dict(row) for row in result]
 
 
+@router.post("/create-checkout-session", tags=["Payments"])
+def create_checkout_session(data: CreateSessionRequest):
+    # Fetch order lines from DB using order_number/code
+    with get_conn() as conn:
+        order = conn.execute("SELECT id FROM sale_order WHERE code = ?", (data.order_number,)).fetchone()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        order_id = order["id"]
+        lines = conn.execute(
+            "SELECT ol.quantity, i.name, i.sku, ol.price, c.code as currency_code "
+            "FROM order_line ol "
+            "JOIN item i ON ol.item_id = i.id "
+            "LEFT JOIN currency c ON ol.currency_id = c.id "
+            "WHERE ol.order_id = ?",
+            (order_id,)
+        ).fetchall()
+        if not lines:
+            raise HTTPException(status_code=400, detail="No order lines found")
+
+    # Build Stripe line_items
+    stripe_line_items = []
+    for line in lines:
+        if not line["price"] or line["price"] <= 0:
+            continue  # skip free items
+        stripe_line_items.append({
+            "price_data": {
+                "currency": (line["currency_code"] or "eur").lower(),
+                "product_data": {
+                    "name": f"{line['name']} ({line['sku']})"
+                },
+                "unit_amount": int(float(line["price"]) * 100),  # Stripe expects cents
+            },
+            "quantity": int(line["quantity"]),
+        })
+
+    if not stripe_line_items:
+        raise HTTPException(status_code=400, detail="No payable items in order")
+
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=stripe_line_items,
+        mode='payment',
+        customer_email=data.email,
+        success_url=f"{base_url}?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{base_url}",
+        metadata={"order_number": data.order_number}
+    )
+    return {"checkout_url": session.url}
+
+
+@router.post("/stripe/webhook", tags=["Payments"])
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except ValueError:
+        return Response(status_code=400)
+    except stripe.error.SignatureVerificationError:
+        return Response(status_code=400)
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        order_number = session["metadata"].get("order_number")
+        if order_number:
+            with get_conn() as conn:
+                conn.execute("UPDATE sale_order SET status = 'confirmed' WHERE code = ?", (order_number,))
+                conn.commit()
+                print("✅ Payment success:", session["id"])
+
+    return {"status": "ok"}
+
 
 @router.get("/sale-orders/{order_id}/print-order", tags=["Documents"])
 def sale_order_pdf(order_id: int):
@@ -188,7 +265,7 @@ def sale_order_pdf(order_id: int):
         ])
 
     # Adjusted, more compact column widths (in points)
-    table = Table(data, colWidths=[120, 45, 45, 35, 45, 55])
+    table = Table(data, colWidths=[120, 45, 90, 35, 45, 55])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -291,7 +368,7 @@ def sale_order_delivery_pdf(order_id: int):
             str(qty)
         ])
 
-    table = Table(data, colWidths=[150, 60, 60, 60])
+    table = Table(data, colWidths=[150, 60, 90, 60])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),

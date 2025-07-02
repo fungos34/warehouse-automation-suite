@@ -437,7 +437,7 @@ CREATE TABLE IF NOT EXISTS route (
 CREATE TABLE IF NOT EXISTS trigger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     
-    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock')) NOT NULL,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order')) NOT NULL,
     origin_id INTEGER,
 
     trigger_type TEXT NOT NULL CHECK (trigger_type IN ('demand','supply')),
@@ -493,57 +493,20 @@ DROP TRIGGER IF EXISTS trg_return_line_split_and_lot;
 CREATE TRIGGER trg_return_line_split_and_lot
 AFTER INSERT ON return_line
 BEGIN
-    -- If quantity > 1, split into multiple lines with quantity 1
-    DELETE FROM return_line
-    WHERE id = NEW.id AND NEW.quantity > 1;
-
-    INSERT INTO return_line (
-        return_order_id, item_id, lot_id, quantity, reason, refund_amount, refund_currency_id, refund_tax_id, refund_discount_id
-    )
-    SELECT
-        NEW.return_order_id,
-        NEW.item_id,
-        NULL, -- lot_id will be set below
-        1,
-        NEW.reason,
-        NEW.refund_amount,
-        NEW.refund_currency_id,
-        NEW.refund_tax_id,
-        NEW.refund_discount_id
-    FROM (
-        SELECT 1
-        FROM generate_series(1, NEW.quantity)
-    )
-    WHERE NEW.quantity > 1;
-
-    -- For each line with quantity 1 and lot_id IS NULL, create a lot and assign it
+    -- For each new return_line (quantity=1), create a lot and assign it
     INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
-    SELECT
-        rl.item_id,
-        'RET-' || rl.return_order_id || '-' || rl.id || '-' || strftime('%Y%m%d%H%M%f','now'),
+    VALUES (
+        NEW.item_id,
+        'RET-' || hex(randomblob(4)),  -- Short, unique lot number -- 'RET-' || NEW.return_order_id || '-' || NEW.id || '-' || strftime('%Y%m%d%H%M%f','now'),
         'return_order',
-        rl.return_order_id,
+        NEW.return_order_id,
         'pending',
         'Return from customer'
-    FROM return_line rl
-    WHERE rl.return_order_id = NEW.return_order_id
-      AND rl.item_id = NEW.item_id
-      AND rl.lot_id IS NULL
-      AND rl.quantity = 1;
+    );
 
-    -- Assign the new lot to the return_line
     UPDATE return_line
-    SET lot_id = (
-        SELECT id FROM lot
-        WHERE origin_model = 'return_order'
-          AND origin_id = return_order_id
-          AND item_id = item_id
-        ORDER BY id DESC LIMIT 1
-    )
-    WHERE return_order_id = NEW.return_order_id
-      AND item_id = NEW.item_id
-      AND lot_id IS NULL
-      AND quantity = 1;
+    SET lot_id = (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1)
+    WHERE id = NEW.id;
 END;
 
 -- Trigger: on return order creation, create supply trigger

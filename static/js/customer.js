@@ -105,6 +105,7 @@ document.getElementById('partner-form').onsubmit = async function(e) {
         body: JSON.stringify(lines)
         });
         if (!lineResp.ok) throw new Error('Failed to add order lines');
+        
     // 4. Show payment reference
     const ref = `${order.code}-${orderId.toString(36).toUpperCase().slice(-5)}`;
     document.getElementById('buy-result').innerHTML = `
@@ -113,6 +114,24 @@ document.getElementById('partner-form').onsubmit = async function(e) {
         <button onclick="downloadSaleOrder(${orderId})">Download Sale Order #${orderId}</button>
 
     `;
+
+    // 5. Create Stripe Checkout session
+    const checkoutResp = await fetch('/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        body: JSON.stringify({
+            order_number: order.code, // or order_id if your backend expects it
+            email: partner.email
+        })
+    });
+    const checkoutData = await checkoutResp.json();
+    if (checkoutResp.ok && checkoutData.checkout_url) {
+        window.location.href = checkoutData.checkout_url; // Redirect to Stripe Checkout
+        return;
+    } else {
+        document.getElementById('buy-result').textContent = checkoutData.detail || 'Failed to start payment';
+    }
+
     cart = {};
     renderCart();
     loadItems();

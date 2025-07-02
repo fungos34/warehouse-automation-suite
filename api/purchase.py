@@ -177,7 +177,7 @@ def purchase_order_pdf(order_id: int, username: str = Depends(get_current_userna
             f"{line_total:.2f} €",
         ])
 
-    table = Table(data, colWidths=[140, 70, 70, 70, 70, 70])
+    table = Table(data, colWidths=[140, 70, 90, 70, 70, 70])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -277,7 +277,7 @@ def purchase_order_delivery_pdf(order_id: int):
             str(qty)
         ])
 
-    table = Table(data, colWidths=[150, 60, 60, 60])
+    table = Table(data, colWidths=[150, 60, 90, 60])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),

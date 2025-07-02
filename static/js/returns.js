@@ -61,11 +61,11 @@ async function startReturnOrderByCode(originModel) {
     const returnLines = [];
     lines.forEach((line, idx) => {
         const qty = parseInt(this[`qty${idx}`].value, 10);
-        if (qty > 0) {
+        for (let i = 0; i < qty; i++) {
             returnLines.push({
                 item_id: line.item_id,
                 lot_id: line.lot_id || null,
-                quantity: qty,
+                quantity: 1,
                 reason: '',
                 price: line.price // <-- add this if your backend supports it
             });

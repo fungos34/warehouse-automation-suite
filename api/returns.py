@@ -198,7 +198,7 @@ def print_return_order(return_order_id: int, username: str = Depends(get_current
             str(line["quantity"]),
             line["reason"] or ""
         ])
-    table = Table(data, colWidths=[120, 60, 60, 60, 120])
+    table = Table(data, colWidths=[120, 60, 90, 60, 120])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -320,7 +320,7 @@ def print_return_bill(return_order_id: int, username: str = Depends(get_current_
             f"{line_total:.2f}"
         ])
 
-    table = Table(data, colWidths=[120, 45, 45, 35, 55, 55])
+    table = Table(data, colWidths=[120, 45, 90, 35, 55, 55])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),

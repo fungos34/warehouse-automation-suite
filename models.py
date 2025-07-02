@@ -75,3 +75,8 @@ class ReturnOrderCreate(BaseModel):
     origin_model: Literal["sale_order", "purchase_order"]
     origin_code: str
     lines: List[ReturnLineIn]
+
+class CreateSessionRequest(BaseModel):
+    email: str
+    order_number: Optional[str] = None
+
