@@ -1,8 +1,8 @@
-
-async function startReturnOrderByCode(originModel) {
-    const code = prompt(`Enter ${originModel.replace('_', ' ')} code:`);
-    if (!code) return;
-
+async function startReturnOrderByCode(originModel, code = null) {
+    if (!code) {
+        code = prompt(`Enter ${originModel.replace('_', ' ')} code:`);
+        if (!code) return;
+    }
     // 1. Fetch order by code
     const orders = await fetch(`/${originModel.replace('_', '-') + 's'}?code=${code}`, {
     headers: { Authorization: 'Bearer ' + jwtToken }
