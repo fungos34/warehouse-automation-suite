@@ -3,12 +3,18 @@ async function startReturnOrderByCode(originModel, code = null) {
         code = prompt(`Enter ${originModel.replace('_', ' ')} code:`);
         if (!code) return;
     }
-    // 1. Fetch order by code
-    const orders = await fetch(`/${originModel.replace('_', '-') + 's'}?code=${code}`)
-        .then(r => r.json());
 
-    // Your /sale-orders and /purchase-orders endpoints return arrays
-    const order = Array.isArray(orders) ? orders.find(o => o.code === code) : null;
+    let order;
+    if (originModel === 'sale_order') {
+        order = await fetch(`/sale-orders/by-code/${code}`).then(r => r.json());
+    } else if (originModel === 'purchase_order') {
+        // Adjust if you have a similar endpoint for purchase orders
+        order = await fetch(`/purchase-orders/by-code/${code}`).then(r => r.json());
+    } else {
+        alert('Unsupported origin model');
+        return;
+    }
+
     if (!order || order.status !== 'confirmed') {
         alert('Order not found or not confirmed');
         return;
@@ -95,9 +101,10 @@ async function startReturnOrderByCode(originModel, code = null) {
 }
 
 async function loadReturnOrders() {
+    const div = document.getElementById('return-orders-list');
+    if (!div) return;
     const resp = await fetch('/return-orders/', { headers: { 'Content-Type': 'application/json' } });
     const orders = await resp.json();
-    const div = document.getElementById('return-orders-list');
     if (!orders.length) {
         div.innerHTML = '<i>No return orders.</i>';
         return;
@@ -115,11 +122,12 @@ async function loadReturnOrders() {
 }
 
 async function loadCustomerReturnOrders() {
+    const div = document.getElementById('customer-return-orders-list');
+    if (!div) return;
     const resp = await fetch('/return-orders/', { headers: { 'Content-Type': 'application/json' } });
     const orders = await resp.json();
     // Optionally filter for this customer if needed
     // const myOrders = orders.filter(o => o.partner_id === currentCustomerId);
-    const div = document.getElementById('customer-return-orders-list');
     if (!orders.length) {
         div.innerHTML = '<i>No return orders.</i>';
         return;
@@ -179,33 +187,31 @@ window.downloadReturnBill = async function(id, code) {
     window.URL.revokeObjectURL(url);
 };
 
-// window.startReturnOrder = function(orderId) {
-//   // Show a modal/form to select items/quantities to return
-//   // For demo, just return all items:
-//   fetch(`/sale-orders/${orderId}/lines`, { headers: { Authorization: 'Bearer ' + jwtToken } })
-//     .then(r => r.json())
-//     .then(lines => {
-//       // Show a form to select which lines/quantities to return
-//       // For now, just return the first line as an example:
-//       const returnLines = lines.map(line => ({
-//         item_id: line.item_id,
-//         quantity: 1, // or let user choose
-//         lot_id: line.lot_id // if needed
-//       }));
-//       fetch('/return-orders/', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
-//         body: JSON.stringify({
-//           origin_model: 'sale_order',
-//           origin_id: orderId,
-//           lines: returnLines
-//         })
-//       }).then(resp => resp.json())
-//         .then(data => alert('Return order created!'))
-//         .catch(e => alert('Error creating return order'));
-//     });
-// };
+document.addEventListener("DOMContentLoaded", async function() {
+    const orderNumber = document.getElementById('order-number').textContent;
+    const detailsDiv = document.getElementById('order-details');
+    let orderId = null;
+    try {
+        const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
+        if (!resp.ok) throw new Error('Order not found');
+        const order = await resp.json();
+        orderId = order.id;
+        let html = `<b>Thank You ${order.partner_name}!</b><br> Your Order will be further processed when the payment has been confirmed by the bank institute.</br><b>Current Status: ${order.status}</b><br>`;
+        html += `<iframe src="/sale-orders/${orderId}/print-order" width="100%" height="600px" style="border:1px solid #ccc;margin-top:20px"></iframe>`;
+        detailsDiv.innerHTML = html;
+    } catch (e) {
+        detailsDiv.innerHTML = `<span style="color:red">Could not load order: ${e.message}</span>`;
+    }
 
-// Load initial data
-loadReturnOrders();
-loadCustomerReturnOrders();
+    document.getElementById('download-bill-btn').onclick = function() {
+        window.open(`/sale-orders/${orderId}/print-order`, '_blank');
+    };
+
+    document.getElementById('create-return-btn').onclick = async function() {
+        startReturnOrderByCode('sale_order', orderNumber);
+    };
+});
+
+// Only call these if the elements exist (for admin/customer panel)
+if (document.getElementById('return-orders-list')) loadReturnOrders();
+if (document.getElementById('customer-return-orders-list')) loadCustomerReturnOrders();

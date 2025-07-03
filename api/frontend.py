@@ -26,7 +26,7 @@ async def shop_success(order_number: str, session_id: str = None):
     <body>
         <h2>Thank you for your purchase!</h2>
         <p>Your order <b>{order_number}</b> has been paid successfully.</p>
-        <a href="/shop/{order_number}/">Back to Shop</a>
+        <a href="/shop/{order_number}/">See Details</a>
     </body>
     </html>
     """
@@ -40,7 +40,7 @@ async def shop_cancel(order_number: str):
     <body>
         <h2>Payment Cancelled</h2>
         <p>Your payment for order <b>{order_number}</b> was cancelled.</p>
-        <a href="/shop/{order_number}/">Back to Shop</a>
+        <a href="/shop/{order_number}/">See Details</a>
     </body>
     </html>
     """
@@ -54,7 +54,7 @@ async def shop_order_page(order_number: str):
     <html>
     <head>
         <title>Order {order_number}</title>
-        <script src="/static/js/shop_order.js"></script>
+        <script src="/static/js/returns.js"></script>
     </head>
     <body>
         <h2>Order <span id="order-number">{order_number}</span></h2>
@@ -62,6 +62,7 @@ async def shop_order_page(order_number: str):
         <button id="download-bill-btn">Download Bill</button>
         <button id="create-return-btn">Create Return Order</button>
         <div id="return-result"></div>
+        <a href="/shop/">Back to Shop</a>
     </body>
     </html>
     """

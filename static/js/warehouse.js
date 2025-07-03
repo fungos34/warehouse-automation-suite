@@ -108,11 +108,14 @@ async function confirmTransferOrder() {
 
 
 async function populateMoveLineSelect() {
-    const [moveLines, items, locations] = await Promise.all([
+    // Add this fetch in parallel with items and locations
+    const [moveLines, items, locations, lots] = await Promise.all([
         fetch('/move-lines', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
         fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
-        fetch('/locations', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+        fetch('/locations', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
+        fetch('/lots', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
     ]);
+    const lotMap = Object.fromEntries(lots.map(l => [l.id, l.lot_number]));
     const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
     const locMap = Object.fromEntries(locations.map(l => [l.id, l]));
     const select = document.getElementById('move-line-select');
@@ -123,7 +126,7 @@ async function populateMoveLineSelect() {
         const item = itemMap[line.item_id] || {};
         const src = locMap[line.source_id] || {};
         const tgt = locMap[line.target_id] || {};
-        const lotLabel = line.lot_number ? ` [Lot: ${line.lot_number}]` : '';
+        const lotLabel = line.lot_id && lotMap[line.lot_id] ? ` [Lot: ${lotMap[line.lot_id]}]` : '';
         const label = `${item.sku || ''} ${item.name || ''} (${line.quantity})${lotLabel} — ${src.code || line.source_id} → ${tgt.code || line.target_id}`;
         const opt = document.createElement('option');
         opt.value = line.id;

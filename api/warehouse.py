@@ -102,6 +102,24 @@ def get_stock_by_item(item_id: int, username: str = Depends(get_current_username
         """, (item_id,))
         return [dict(row) for row in result]
 
+@router.get("/lots", tags=["Warehouse"])
+def get_lots(username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        result = conn.execute("""
+            SELECT
+                id,
+                item_id,
+                lot_number,
+                origin_model,
+                origin_id,
+                quality_control_status,
+                notes,
+                created_at
+            FROM lot
+            ORDER BY id DESC
+        """).fetchall()
+        return [dict(row) for row in result]
+
 # --- LOCATION ZONES ---
 @router.get("/location-zones", tags=["Warehouse"])
 def get_location_zones(username: str = Depends(get_current_username)):

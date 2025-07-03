@@ -34,6 +34,27 @@ def get_draft_purchase_orders(username: str = Depends(get_current_username)):
         """)
         return [dict(row) for row in result]
 
+@router.get("/purchase-orders/by-code/{order_number}", tags=["Purchases"])
+def get_purchase_order_by_code(order_number: str, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        order = conn.execute(
+            "SELECT po.*, p.name as partner_name FROM purchase_order po LEFT JOIN partner p ON po.partner_id = p.id WHERE po.code = ?",
+            (order_number,)
+        ).fetchone()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        lines = conn.execute(
+            "SELECT pl.*, i.name as item_name, c.code as currency_code FROM purchase_line pl JOIN item i ON pl.item_id = i.id LEFT JOIN currency c ON pl.currency_id = c.id WHERE pl.order_id = ?",
+            (order["id"],)
+        ).fetchall()
+        return {
+            "id": order["id"],
+            "code": order["code"],
+            "status": order["status"],
+            "partner_name": order["partner_name"],
+            "lines": [dict(line) for line in lines]
+        }
+
 @router.post("/purchase-orders/{order_id}/confirm", tags=["Purchasing"])
 def confirm_purchase_order(order_id: int, username: str = Depends(get_current_username)):
     with get_conn() as conn:

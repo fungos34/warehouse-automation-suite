@@ -1,4 +1,3 @@
-
 PRAGMA recursive_triggers = ON;
 
 -- Create Bill of Material
@@ -305,6 +304,7 @@ CREATE TABLE IF NOT EXISTS order_line (
     price_list_id INTEGER,            -- NEW: price list for this line
     cost REAL,                        -- NEW: cost for this line (manufacture/purchase)
     cost_currency_id INTEGER,         -- NEW: currency for cost
+    returned_quantity REAL DEFAULT 0, -- <--- add this line
     FOREIGN KEY(order_id) REFERENCES sale_order(id),
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(route_id) REFERENCES route(id),
@@ -343,6 +343,7 @@ CREATE TABLE IF NOT EXISTS purchase_order_line (
     currency_id INTEGER,              -- NEW: currency for this line
     cost REAL,                        -- NEW: cost for this line (if different from price)
     cost_currency_id INTEGER,         -- NEW: currency for cost
+    returned_quantity REAL DEFAULT 0, -- <--- add this line
     FOREIGN KEY(purchase_order_id) REFERENCES purchase_order(id),
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(route_id) REFERENCES route(id),
@@ -538,6 +539,52 @@ BEGIN
         'inbound',
         'draft'
     WHERE NEW.quantity = 1;
+END;
+
+-- Update returned_quantity on order_line when a return_order is confirmed
+DROP TRIGGER IF EXISTS trg_confirm_return_order_update_returned_quantity;
+CREATE TRIGGER trg_confirm_return_order_update_returned_quantity
+AFTER UPDATE OF status ON return_order
+WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed' AND NEW.origin_model = 'sale_order'
+BEGIN
+    UPDATE order_line
+    SET returned_quantity = returned_quantity + (
+        SELECT IFNULL(SUM(rl.quantity), 0)
+        FROM return_line rl
+        WHERE rl.return_order_id = NEW.id
+          AND rl.item_id = order_line.item_id
+          AND (rl.lot_id = order_line.lot_id OR (rl.lot_id IS NULL AND order_line.lot_id IS NULL))
+    )
+    WHERE order_line.order_id = NEW.origin_id
+      AND EXISTS (
+        SELECT 1 FROM return_line rl
+        WHERE rl.return_order_id = NEW.id
+          AND rl.item_id = order_line.item_id
+          AND (rl.lot_id = order_line.lot_id OR (rl.lot_id IS NULL AND order_line.lot_id IS NULL))
+    );
+END;
+
+-- Update returned_quantity on purchase_order_line when a return_order is confirmed
+DROP TRIGGER IF EXISTS trg_confirm_return_po_update_returned_quantity;
+CREATE TRIGGER trg_confirm_return_po_update_returned_quantity
+AFTER UPDATE OF status ON return_order
+WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed' AND NEW.origin_model = 'purchase_order'
+BEGIN
+    UPDATE purchase_order_line
+    SET returned_quantity = returned_quantity + (
+        SELECT IFNULL(SUM(rl.quantity), 0)
+        FROM return_line rl
+        WHERE rl.return_order_id = NEW.id
+          AND rl.item_id = purchase_order_line.item_id
+          AND (rl.lot_id = purchase_order_line.lot_id OR (rl.lot_id IS NULL AND purchase_order_line.lot_id IS NULL))
+    )
+    WHERE purchase_order_line.purchase_order_id = NEW.origin_id
+      AND EXISTS (
+        SELECT 1 FROM return_line rl
+        WHERE rl.return_order_id = NEW.id
+          AND rl.item_id = purchase_order_line.item_id
+          AND (rl.lot_id = purchase_order_line.lot_id OR (rl.lot_id IS NULL AND purchase_order_line.lot_id IS NULL))
+    );
 END;
 
 -- Trigger: on stock adjustment, update stock
@@ -2138,6 +2185,7 @@ INSERT INTO rule (
 
 -- Rules for the return route: Customer Area → Input → Quality → Stock
 INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
+((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON09'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON02'), 0, 1);
 

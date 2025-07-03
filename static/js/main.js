@@ -348,6 +348,15 @@ document.getElementById('login-btn').onclick = async function() {
     }
 };
 
+// Logout handler
+document.getElementById('logout-btn').onclick = function() {
+    jwtToken = null;
+    // Optionally notify backend (not required for JWT stateless logout)
+    fetch('/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + jwtToken } }).catch(()=>{});
+    localStorage.removeItem('jwtToken');
+    showLoginModal();
+};
+
 // Refresh button
 document.getElementById('refresh-btn').onclick = fetchAndRender;
 

@@ -119,7 +119,7 @@ def cancel_sale_order(order_id: int, username: str = Depends(get_current_usernam
 
 
 @router.get("/sale-orders/{order_id}/lines", tags=["Sales"])
-def get_sale_order_lines(order_id: int, username: str = Depends(get_current_username)):
+def get_sale_order_lines(order_id: int):  #  username: str = Depends(get_current_username)
     with get_conn() as conn:
         result = conn.execute(
             "SELECT * FROM order_line WHERE order_id = ? ORDER BY id", (order_id,)
@@ -129,9 +129,8 @@ def get_sale_order_lines(order_id: int, username: str = Depends(get_current_user
 
 @router.post("/create-checkout-session", tags=["Payments"])
 def create_checkout_session(data: CreateSessionRequest):
-    # Fetch order lines from DB using order_number/code
     with get_conn() as conn:
-        order = conn.execute("SELECT id FROM sale_order WHERE code = ?", (data.order_number,)).fetchone()
+        order = conn.execute("SELECT * FROM sale_order WHERE code = ?", (data.order_number,)).fetchone()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
         order_id = order["id"]
@@ -146,24 +145,28 @@ def create_checkout_session(data: CreateSessionRequest):
         if not lines:
             raise HTTPException(status_code=400, detail="No order lines found")
 
-    # Build Stripe line_items
-    stripe_line_items = []
-    for line in lines:
-        if not line["price"] or line["price"] <= 0:
-            continue  # skip free items
-        stripe_line_items.append({
-            "price_data": {
-                "currency": (line["currency_code"] or "eur").lower(),
-                "product_data": {
-                    "name": f"{line['name']} ({line['sku']})"
-                },
-                "unit_amount": int(float(line["price"]) * 100),  # Stripe expects cents
-            },
-            "quantity": int(line["quantity"]),
-        })
+        # Calculate subtotal
+        subtotal = sum(float(line["price"] or 0) * float(line["quantity"] or 0) for line in lines)
+        discount = float(order["discount"]) if "discount" in order.keys() and order["discount"] else 0.0
+        tax_percent = float(order["tax_percent"]) if "tax_percent" in order.keys() and order["tax_percent"] else 19.0
+        taxed_base = subtotal - discount
+        tax_amount = taxed_base * (tax_percent / 100)
+        total = taxed_base + tax_amount
 
-    if not stripe_line_items:
-        raise HTTPException(status_code=400, detail="No payable items in order")
+        # Use the currency of the first line, or fallback
+        currency = (lines[0]["currency_code"] or "eur").lower()
+
+    # Stripe expects cents
+    stripe_line_items = [{
+        "price_data": {
+            "currency": currency,
+            "product_data": {
+                "name": f"Order {data.order_number}"
+            },
+            "unit_amount": int(round(total * 100)),
+        },
+        "quantity": 1,
+    }]
 
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
@@ -174,8 +177,8 @@ def create_checkout_session(data: CreateSessionRequest):
         cancel_url=f"{base_url}shop/{data.order_number}/cancel",
         metadata={"order_number": data.order_number},
         payment_intent_data={
-        "description": f"{data.order_number}"
-    }
+            "description": f"{data.order_number}"
+        }
     )
     return {"checkout_url": session.url}
 
@@ -207,17 +210,42 @@ async def stripe_webhook(request: Request):
 
 @router.get("/sale-orders/{order_id}/print-order", tags=["Documents"])
 def sale_order_pdf(order_id: int):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from io import BytesIO
+    from datetime import datetime
+    from utils import add_page_number_and_qr
+
     with get_conn() as conn:
         order = conn.execute("SELECT * FROM sale_order WHERE id = ?", (order_id,)).fetchone()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
         buyer = conn.execute("SELECT * FROM partner WHERE id = ?", (order["partner_id"],)).fetchone()
         lines = conn.execute("""
-            SELECT ol.quantity, ol.price, i.name as item_name, i.sku as item_sku, ol.lot_id, l.lot_number as lot_code
+            SELECT ol.quantity, ol.returned_quantity, ol.price, i.name as item_name, i.sku as item_sku, ol.lot_id, l.lot_number as lot_code
             FROM order_line ol
             JOIN item i ON ol.item_id = i.id
             LEFT JOIN lot l ON ol.lot_id = l.id
             WHERE ol.order_id = ?
+        """, (order_id,)).fetchall()
+        # Get tax percent from sale order's tax_id
+        tax_percent = 19.0
+        if "tax_id" in order.keys() and order["tax_id"]:
+            tax_row = conn.execute("SELECT percent FROM tax WHERE id = ?", (order["tax_id"],)).fetchone()
+            if tax_row:
+                tax_percent = float(tax_row["percent"])
+        # Get discount if present
+        discount = float(order["discount"]) if "discount" in order.keys() and order["discount"] else 0.0
+
+        return_lines = conn.execute("""
+            SELECT ro.code as return_order_code, rl.quantity, rl.refund_amount, i.name as item_name, i.sku as item_sku, rl.lot_id, l.lot_number as lot_code
+            FROM return_order ro
+            JOIN return_line rl ON rl.return_order_id = ro.id
+            JOIN item i ON rl.item_id = i.id
+            LEFT JOIN lot l ON rl.lot_id = l.id
+            WHERE ro.origin_model = 'sale_order' AND ro.origin_id = ? AND ro.status = 'confirmed'
         """, (order_id,)).fetchall()
         company = conn.execute("""
             SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
@@ -225,9 +253,6 @@ def sale_order_pdf(order_id: int):
             JOIN partner p ON c.partner_id = p.id
             LIMIT 1
         """).fetchone()
-    # Fallbacks for discount/tax if not present in DB
-    discount = float(order["discount"]) if "discount" in order.keys() else 0.0
-    tax_percent = float(order["tax_percent"]) if "tax_percent" in order.keys() else 19.0  # e.g. 19% VAT
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
@@ -261,48 +286,91 @@ def sale_order_pdf(order_id: int):
     elements.append(Paragraph(f"<b>Order Number {order['code']}</b>", styles["Title"]))
     elements.append(Paragraph(f"Status: {order['status']}", styles["Normal"]))
     if order["status"] != "confirmed":
-        # Add a more decent, smaller, gray note below the status
         elements.append(Paragraph(
             "<font size='8' color='gray'>Note: This document is not a valid bill, but a non-binding offer.</font>",
             styles["Normal"]
         ))
     elements.append(Spacer(1, 12))
 
-    # Table for items
+    # Table for items (only non-returned quantity)
     data = [["Item", "SKU", "Lot", "Qty", "Unit €", "Total €"]]
     subtotal = 0.0
 
     for line in lines:
         qty = float(line["quantity"])
+        returned_qty = float(line["returned_quantity"] or 0)
+        qty_to_bill = qty - returned_qty
         price = float(line["price"]) if "price" in line.keys() and line["price"] is not None else 0.0
-        line_total = qty * price
         lot_code = line["lot_code"] or ""
-        subtotal += line_total
-        data.append([
-            line["item_name"],
-            line["item_sku"],
-            lot_code,
-            str(int(qty)) if qty == int(qty) else f"{qty:.2f}",
-            f"{price:.2f}",
-            f"{line_total:.2f}"
-        ])
+        if qty_to_bill > 0:
+            line_total = qty_to_bill * price
+            subtotal += line_total
+            data.append([
+                line["item_name"],
+                line["item_sku"],
+                lot_code,
+                str(int(qty_to_bill)) if qty_to_bill == int(qty_to_bill) else f"{qty_to_bill:.2f}",
+                f"{price:.2f}",
+                f"{line_total:.2f}"
+            ])
 
-    # Adjusted, more compact column widths (in points)
     table = Table(data, colWidths=[120, 45, 90, 35, 45, 55])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
         ('ALIGN', (1,1), (-1,-1), 'CENTER'),
-        ('ALIGN', (3,1), (-1,-1), 'RIGHT'),  # Right-align Qty, Unit, Total
+        ('ALIGN', (3,1), (-1,-1), 'RIGHT'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
-        ('FONTSIZE', (0,0), (-1,-1), 8),  # Smaller font
+        ('FONTSIZE', (0,0), (-1,-1), 8),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('TOPPADDING', (0,0), (-1,0), 6),
     ]))
     elements.append(table)
     elements.append(Spacer(1, 18))
+
+    # Table for confirmed returns (negative prices)
+    refund_total_net = 0.0
+    refund_total_tax = 0.0
+    refund_total_gross = 0.0
+    if return_lines:
+        elements.append(Paragraph("<b>Confirmed Returns</b>", styles["Heading3"]))
+        ret_data = [["Return#", "Item", "SKU", "Lot", "Qty", "Unit €", "Total €", "Tax €"]]
+        for rl in return_lines:
+            qty = float(rl["quantity"])
+            refund_net = float(rl["refund_amount"]) if rl["refund_amount"] is not None else 0.0
+            refund_tax = refund_net * (tax_percent / 100)
+            refund_gross = refund_net + refund_tax
+            unit_price = refund_net / qty if qty else 0.0
+            refund_total_net += refund_net
+            refund_total_tax += refund_tax
+            refund_total_gross += refund_gross
+            ret_data.append([
+                rl["return_order_code"],
+                rl["item_name"],
+                rl["item_sku"],
+                rl["lot_code"] or "",
+                str(int(qty)) if qty == int(qty) else f"{qty:.2f}",
+                f"{-unit_price:.2f}",
+                f"{-refund_net:.2f}",
+                f"{-refund_tax:.2f}"
+            ])
+        ret_table = Table(ret_data, colWidths=[60, 90, 45, 60, 35, 45, 55, 45])
+        ret_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+            ('ALIGN', (1,1), (-1,-1), 'CENTER'),
+            ('ALIGN', (4,1), (-1,-1), 'RIGHT'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,0), 6),
+            ('TOPPADDING', (0,0), (-1,0), 6),
+        ]))
+        elements.append(ret_table)
+        elements.append(Spacer(1, 12))
 
     # Summary
     elements.append(Paragraph(f"Subtotal: {subtotal:.2f} €", styles["Normal"]))
@@ -312,16 +380,20 @@ def sale_order_pdf(order_id: int):
     tax_amount = taxed_base * (tax_percent / 100)
     elements.append(Paragraph(f"Tax ({tax_percent:.2f}%): {tax_amount:.2f} €", styles["Normal"]))
     total = taxed_base + tax_amount
-    elements.append(Paragraph(f"<b>Total: {total:.2f} €</b>", styles["Title"]))
+    elements.append(Paragraph(f"Total before returns: {total:.2f} €", styles["Normal"]))
+    if refund_total_gross:
+        elements.append(Paragraph(f"Refunded (returns, net): { -refund_total_net:.2f} €", styles["Normal"]))
+        elements.append(Paragraph(f"Refunded tax: { -refund_total_tax:.2f} €", styles["Normal"]))
+        elements.append(Paragraph(f"Total refund (gross): { -refund_total_gross:.2f} €", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Final Total: {total - refund_total_gross:.2f} €</b>", styles["Title"]))
 
-    # doc.build(elements, canvasmaker=NumberedCanvas)
     doc.build(elements, onFirstPage=lambda c, d: add_page_number_and_qr(c, d, order['code']),
           onLaterPages=lambda c, d: add_page_number_and_qr(c, d, order['code']))
     buffer.seek(0)
     return Response(
         buffer.read(),
         media_type="application/pdf",
-        headers = {"Content-Disposition": "attachment; filename=sales_order_" + order['code'] + ".pdf"}
+        headers = {"Content-Disposition": "inline; filename=sales_order_" + order['code'] + ".pdf"}
     )
 
 
