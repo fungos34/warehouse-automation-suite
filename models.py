@@ -80,3 +80,8 @@ class CreateSessionRequest(BaseModel):
     email: str
     order_number: Optional[str] = None
 
+class StockAdjustmentIn(BaseModel):
+    item_id: int
+    location_id: int
+    delta: int
+    reason: str

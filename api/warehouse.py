@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from database import get_conn
 from models import (
     TransferOrderCreate, TransferOrderLineIn,
-    ActionEnum, OperationTypeEnum, 
+    ActionEnum, OperationTypeEnum, StockAdjustmentIn
 )
 from auth import get_current_username
 from typing import List
@@ -84,12 +84,15 @@ def confirm_transfer_order(transfer_order_id: int, username: str = Depends(get_c
 # --- STOCK ADJUSTMENTS ---
 
 @router.post("/stock-adjustments/", tags=["Warehouse"])
-def add_stock_adjustment(item_id: int, location_id: int, delta: int, reason: str, username: str = Depends(get_current_username)):
+def add_stock_adjustment(
+    data: StockAdjustmentIn,
+    username: str = Depends(get_current_username)
+):
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO stock_adjustment (item_id, location_id, delta, reason)
             VALUES (?, ?, ?, ?)
-        """, (item_id, location_id, delta, reason))
+        """, (data.item_id, data.location_id, data.delta, data.reason))
         conn.commit()
     return {"message": "Stock adjusted"}
 
