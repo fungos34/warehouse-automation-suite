@@ -1,13 +1,20 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response
 from database import get_conn
 from models import (
     TransferOrderCreate, TransferOrderLineIn,
-    ActionEnum, OperationTypeEnum, StockAdjustmentIn
+    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate
 )
 from auth import get_current_username
 from typing import List
 import uuid
-
+import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from io import BytesIO
+from PIL import Image as PILImage
+from utils import add_page_number_and_qr
 
 router = APIRouter()
 
@@ -339,6 +346,16 @@ def get_warehouse_items(username: str = Depends(get_current_username)):
         result = conn.execute(query, vendor_customer_zone_ids).fetchall()
         return [dict(row) for row in result]
 
+
+@router.get("/items/{item_id}", tags=["Catalog"])
+def get_item(item_id: int):
+    with get_conn() as conn:
+        result = conn.execute("SELECT * FROM item WHERE id = ?", (item_id,)).fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Item not found")
+        return dict(result)
+    
+
 @router.post("/stock-adjustments/", tags=["Warehouse"])
 def add_stock_adjustment(item_id: int, location_id: int, delta: int, reason: str, username: str = Depends(get_current_username)):
     with get_conn() as conn:
@@ -348,3 +365,426 @@ def add_stock_adjustment(item_id: int, location_id: int, delta: int, reason: str
         """, (item_id, location_id, delta, reason))
         conn.commit()
     return {"message": "Stock adjusted"}
+
+
+@router.get("/manufacturing-orders/", tags=["Warehouse"])
+def list_manufacturing_orders(status: str = None, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        if status:
+            result = conn.execute(
+                "SELECT * FROM manufacturing_order WHERE status = ?", (status,)
+            ).fetchall()
+        else:
+            result = conn.execute(
+                "SELECT * FROM manufacturing_order"
+            ).fetchall()
+        return [dict(row) for row in result]
+    
+
+@router.post("/manufacturing-orders/{mo_id}/done", tags=["Warehouse"])
+def set_manufacturing_order_done(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        updated = conn.execute(
+            "UPDATE manufacturing_order SET status = 'done' WHERE id = ? AND status = 'confirmed'", (mo_id,)
+        ).rowcount
+        conn.commit()
+        if not updated:
+            raise HTTPException(status_code=404, detail="Manufacturing order not found or not in confirmed status")
+    return {"message": "Manufacturing order set to done"}
+
+
+@router.post("/manufacturing-orders/{mo_id}/confirm", tags=["Warehouse"])
+def confirm_manufacturing_order(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        updated = conn.execute(
+            "UPDATE manufacturing_order SET status = 'confirmed' WHERE id = ? AND status = 'draft'", (mo_id,)
+        ).rowcount
+        conn.commit()
+        if not updated:
+            raise HTTPException(status_code=404, detail="Manufacturing order not found or not in draft status")
+    return {"message": "Manufacturing order confirmed"}
+
+@router.post("/manufacturing-orders/{mo_id}/cancel", tags=["Warehouse"])
+def cancel_manufacturing_order(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        updated = conn.execute(
+            "UPDATE manufacturing_order SET status = 'cancelled' WHERE id = ? AND status = 'draft'", (mo_id,)
+        ).rowcount
+        conn.commit()
+        if not updated:
+            raise HTTPException(status_code=404, detail="Manufacturing order not found or not in draft status")
+    return {"message": "Manufacturing order cancelled"}
+
+
+@router.get("/manufacturing-items", tags=["Warehouse"])
+def get_manufacturing_items(username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        result = conn.execute("""
+            SELECT id, name, sku
+            FROM item
+            WHERE bom_id IS NOT NULL
+            ORDER BY name
+        """).fetchall()
+        return [dict(row) for row in result]
+    
+
+@router.post("/manufacturing-orders/", tags=["Warehouse"])
+def create_manufacturing_order(
+    data: ManufacturingOrderCreate,
+    username: str = Depends(get_current_username)
+):
+    code = f"MO-{uuid.uuid4().hex[:8].upper()}"
+    planned_start = data.planned_start or datetime.datetime.now().isoformat()
+    planned_end = data.planned_end or (datetime.datetime.now() + datetime.timedelta(days=1)).isoformat()
+    with get_conn() as conn:
+        # Get partner_id for current user
+        partner_row = conn.execute(
+            "SELECT partner_id FROM user WHERE username = ?", (username,)
+        ).fetchone()
+        if not partner_row:
+            raise HTTPException(status_code=404, detail="User not found")
+        partner_id = partner_row["partner_id"]
+        cur = conn.execute("""
+            INSERT INTO manufacturing_order (code, partner_id, item_id, quantity, status, planned_start, planned_end, origin)
+            VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)
+        """, (code, partner_id, data.item_id, data.quantity, planned_start, planned_end, "Manual creation"))
+        conn.commit()
+        return {"manufacturing_order_id": cur.lastrowid, "code": code}
+
+
+@router.post("/bom/{bom_id}/file", tags=["Warehouse"])
+def upload_bom_file(
+    bom_id: int,
+    file: UploadFile = File(...),
+    username: str = Depends(get_current_username)
+):
+    content = file.file.read()
+    filename = file.filename
+    mimetype = file.content_type
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE bom SET file = ?, file_name = ?, file_type = ? WHERE id = ?",
+            (content, filename, mimetype, bom_id)
+        )
+        conn.commit()
+    return {"message": "BOM file uploaded"}
+
+
+@router.get("/manufacturing-orders/{mo_id}/download", tags=["Warehouse"])
+def download_manufacturing_order_pdf(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        mo = conn.execute("""
+            SELECT mo.*, i.name AS item_name, i.sku, p.name AS partner_name, p.street, p.city, p.country, p.zip,
+                   c.name AS company_name, cp.street AS company_street, cp.city AS company_city, cp.country AS company_country, cp.zip AS company_zip
+            FROM manufacturing_order mo
+            JOIN item i ON mo.item_id = i.id
+            JOIN partner p ON mo.partner_id = p.id
+            JOIN company c ON c.id = 1
+            JOIN partner cp ON c.partner_id = cp.id
+            WHERE mo.id = ?
+        """, (mo_id,)).fetchone()
+        if not mo:
+            raise HTTPException(status_code=404, detail="Manufacturing order not found")
+        bom = conn.execute("SELECT * FROM bom WHERE id = (SELECT bom_id FROM item WHERE id = ?)", (mo["item_id"],)).fetchone()
+        bom_lines = conn.execute("""
+            SELECT bl.*, it.name AS component_name, it.sku AS component_sku, it.vendor_id, it.cost, cur.code AS cost_currency
+            FROM bom_line bl
+            JOIN item it ON bl.item_id = it.id
+            LEFT JOIN currency cur ON it.cost_currency_id = cur.id
+            WHERE bl.bom_id = ?
+        """, (bom["id"],)).fetchall()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Company info
+    company_lines = [
+        f"<b>{mo['company_name']}</b>",
+        f"{mo['company_street']}, {mo['company_zip']} {mo['company_city']}, {mo['company_country']}",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, company_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Contractor info
+    contractor_lines = [
+        "<b>Contractor:</b>",
+        mo["partner_name"],
+        mo["street"],
+        f"{mo['zip']} {mo['city']}, {mo['country']}",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, contractor_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # MO Info
+    elements.append(Paragraph(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Manufacturing Order {mo['code']}</b>", styles["Title"]))
+    elements.append(Paragraph(f"Status: {mo['status']}", styles["Normal"]))
+    elements.append(Paragraph(f"Product: {mo['item_name']} (SKU: {mo['sku']})", styles["Normal"]))
+    elements.append(Paragraph(f"Quantity: {mo['quantity']}", styles["Normal"]))
+    elements.append(Paragraph(f"Planned Start: {mo['planned_start']}", styles["Normal"]))
+    elements.append(Paragraph(f"Planned End: {mo['planned_end']}", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # BOM Table with costs
+    elements.append(Paragraph("<b>BOM Components</b>", styles["Heading3"]))
+    bom_data = [["Component", "SKU", "Vendor", "Per Product", "Total for MO", "Unit Cost", "Total Cost"]]
+    total_cost = 0.0
+    for bl in bom_lines:
+        vendor_name = ""
+        if bl["vendor_id"]:
+            vendor = conn.execute("SELECT name FROM partner WHERE id = ?", (bl["vendor_id"],)).fetchone()
+            vendor_name = vendor["name"] if vendor else ""
+        unit_cost = float(bl["cost"] or 0)
+        total_qty = float(bl["quantity"]) * float(mo["quantity"])
+        line_cost = unit_cost * total_qty
+        total_cost += line_cost
+        bom_data.append([
+            bl["component_name"],
+            bl["component_sku"],
+            vendor_name,
+            str(bl["quantity"]),
+            str(total_qty),
+            f"{unit_cost:.2f} {bl['cost_currency'] or ''}",
+            f"{line_cost:.2f} {bl['cost_currency'] or ''}"
+        ])
+    bom_table = Table(bom_data, colWidths=[120, 60, 80, 70, 70, 60, 60])
+    bom_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+        ('ALIGN', (1,1), (-1,-1), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('TOPPADDING', (0,0), (-1,0), 6),
+    ]))
+    elements.append(bom_table)
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"<b>Total BOM Cost: {total_cost:.2f} EUR</b>", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Instructions
+    elements.append(Paragraph("<b>Instructions:</b>", styles["Heading3"]))
+    elements.append(Paragraph(bom["instructions"], styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Signatures header
+    elements.append(Paragraph("<b>Signatures</b>", styles["Heading3"]))
+    elements.append(Paragraph("Date and Place: ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("Manufacturer: ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("Contractor:   ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 24))
+
+    # BOM File (PDF or JPG) - always last
+    if bom["file"]:
+        file_type = bom["file_type"] if "file_type" in bom.keys() else ""
+        file_name = bom["file_name"] if "file_name" in bom.keys() else "attachment"
+        elements.append(Paragraph("<b>BOM Attachment</b>", styles["Heading3"]))
+        elements.append(Paragraph(f"File: {file_name}", styles["Normal"]))
+        elements.append(Paragraph(f"Type: {file_type}", styles["Normal"]))
+        elements.append(Spacer(1, 12))
+        if file_type == "application/pdf":
+            elements.append(Paragraph("See attached PDF for full instructions.", styles["Normal"]))
+            elements.append(Paragraph(f"Size: {len(bom['file'])} bytes", styles["Normal"]))
+        elif file_type == "image/jpeg":
+            try:
+                img = PILImage.open(BytesIO(bom["file"]))
+                img_width, img_height = img.size
+                aspect = img_height / img_width
+                display_width = 400
+                display_height = int(display_width * aspect)
+                img_buffer = BytesIO(bom["file"])
+                elements.append(Image(img_buffer, width=display_width, height=display_height))
+                elements.append(Spacer(1, 12))
+            except Exception:
+                elements.append(Paragraph("Error displaying image.", styles["Normal"]))
+        else:
+            elements.append(Paragraph("Unsupported file type.", styles["Normal"]))
+
+    # Build PDF with page numbers
+    doc.build(
+        elements,
+        onFirstPage=lambda c, d: add_page_number_and_qr(c, d, mo['code']),
+        onLaterPages=lambda c, d: add_page_number_and_qr(c, d, mo['code'])
+    )
+    buffer.seek(0)
+    return Response(
+        buffer.read(),
+        media_type="application/pdf",
+        headers = {"Content-Disposition": f"inline; filename=manufacturing_order_{mo['code']}.pdf"}
+    )
+
+
+@router.get("/manufacturing-orders/{mo_id}/receipt", tags=["Warehouse"])
+def download_manufacturing_receipt_pdf(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        mo = conn.execute("""
+            SELECT mo.*, i.name AS item_name, i.sku, p.name AS partner_name, p.street, p.city, p.country, p.zip,
+                   c.name AS company_name, cp.street AS company_street, cp.city AS company_city, cp.country AS company_country, cp.zip AS company_zip
+            FROM manufacturing_order mo
+            JOIN item i ON mo.item_id = i.id
+            JOIN partner p ON mo.partner_id = p.id
+            JOIN company c ON c.id = 1
+            JOIN partner cp ON c.partner_id = cp.id
+            WHERE mo.id = ?
+        """, (mo_id,)).fetchone()
+        if not mo:
+            raise HTTPException(status_code=404, detail="Manufacturing order not found")
+        bom = conn.execute("SELECT * FROM bom WHERE id = (SELECT bom_id FROM item WHERE id = ?)", (mo["item_id"],)).fetchone()
+        bom_lines = conn.execute("""
+            SELECT bl.*, it.name AS component_name, it.sku AS component_sku, it.vendor_id, it.cost, cur.code AS cost_currency,
+                   bl.lot_id
+            FROM bom_line bl
+            JOIN item it ON bl.item_id = it.id
+            LEFT JOIN currency cur ON it.cost_currency_id = cur.id
+            WHERE bl.bom_id = ?
+        """, (bom["id"],)).fetchall()
+        # Products created (lots)
+        lots = conn.execute("""
+            SELECT l.id, l.lot_number, l.created_at, l.quality_control_status
+            FROM lot l
+            WHERE l.origin_model = 'manufacturing_order' AND l.origin_id = ?
+            ORDER BY l.id
+        """, (mo_id,)).fetchall()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Header
+    elements.append(Paragraph(f"<b>Manufacturing Report</b>", styles["Title"]))
+    elements.append(Spacer(1, 12))
+
+    # Company info
+    company_lines = [
+        f"<b>{mo['company_name']}</b>",
+        f"{mo['company_street']}, {mo['company_zip']} {mo['company_city']}, {mo['company_country']}",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, company_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Contractor info
+    contractor_lines = [
+        "<b>Contractor:</b>",
+        mo["partner_name"],
+        mo["street"],
+        f"{mo['zip']} {mo['city']}, {mo['country']}",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, contractor_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # MO Info
+    elements.append(Paragraph(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Manufacturing Order {mo['code']}</b>", styles["Heading2"]))
+    elements.append(Paragraph(f"Status: {mo['status']}", styles["Normal"]))
+    elements.append(Paragraph(f"Product: {mo['item_name']} (SKU: {mo['sku']})", styles["Normal"]))
+    elements.append(Paragraph(f"Quantity: {mo['quantity']}", styles["Normal"]))
+    elements.append(Paragraph(f"Planned Start: {mo['planned_start']}", styles["Normal"]))
+    elements.append(Paragraph(f"Planned End: {mo['planned_end']}", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+
+    # BOM Table with costs and lot number (lot number after SKU)
+    elements.append(Paragraph("<b>BOM Components</b>", styles["Heading3"]))
+    bom_data = [["Component", "SKU", "Lot Number", "Vendor", "Per Product", "Total for MO", "Unit Cost", "Total Cost"]]
+    total_cost = 0.0
+    for bl in bom_lines:
+        vendor_name = ""
+        if bl["vendor_id"]:
+            vendor = conn.execute("SELECT name FROM partner WHERE id = ?", (bl["vendor_id"],)).fetchone()
+            vendor_name = vendor["name"] if vendor else ""
+        unit_cost = float(bl["cost"] or 0)
+        total_qty = float(bl["quantity"]) * float(mo["quantity"])
+        line_cost = unit_cost * total_qty
+        total_cost += line_cost
+        # Get lot number if lot_id is present
+        lot_number = "-"
+        if "lot_id" in bl.keys() and bl["lot_id"]:
+            lot_row = conn.execute("SELECT lot_number FROM lot WHERE id = ?", (bl["lot_id"],)).fetchone()
+            lot_number = lot_row["lot_number"] if lot_row and lot_row["lot_number"] else "-"
+        bom_data.append([
+            bl["component_name"],
+            bl["component_sku"],
+            lot_number,
+            vendor_name,
+            str(bl["quantity"]),
+            str(total_qty),
+            f"{unit_cost:.2f} {bl['cost_currency'] or ''}",
+            f"{line_cost:.2f} {bl['cost_currency'] or ''}"
+        ])
+    bom_table = Table(bom_data, colWidths=[90, 60, 110, 70, 50, 60, 50, 50])
+    bom_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),  # smaller font
+        ('BOTTOMPADDING', (0,0), (-1,0), 4),
+        ('TOPPADDING', (0,0), (-1,0), 4),
+    ]))
+    elements.append(bom_table)
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"<b>Total BOM Cost: {total_cost:.2f} EUR</b>", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Products created (lots) table: name, sku, lot number, batch size, created at, quality status
+    elements.append(Paragraph("<b>Products Created</b>", styles["Heading3"]))
+    lot_data = [["Name", "SKU", "Lot Number", "Batch Size", "Created At", "Quality Status"]]
+    for l in lots:
+        # Get item info for this lot
+        item = conn.execute("SELECT name, sku FROM item WHERE id = (SELECT item_id FROM lot WHERE id = ?)", (l["id"],)).fetchone()
+        # Get batch size (sum of stock for this lot)
+        batch_size_row = conn.execute("SELECT SUM(quantity) as batch_size FROM stock WHERE lot_id = ?", (l["id"],)).fetchone()
+        batch_size = batch_size_row["batch_size"] if batch_size_row and batch_size_row["batch_size"] is not None else "-"
+        lot_data.append([
+            item["name"] if item else "",
+            item["sku"] if item else "",
+            l["lot_number"],
+            str(batch_size),
+            l["created_at"],
+            l["quality_control_status"]
+        ])
+    lot_table = Table(lot_data, colWidths=[80, 60, 110, 50, 80, 70])
+    lot_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),  # smaller font
+        ('BOTTOMPADDING', (0,0), (-1,0), 4),
+        ('TOPPADDING', (0,0), (-1,0), 4),
+    ]))
+    elements.append(lot_table)
+    elements.append(Spacer(1, 12))
+
+    # Signatures header
+    elements.append(Paragraph("<b>Signatures</b>", styles["Heading3"]))
+    elements.append(Paragraph("Date and Place: ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("Manufacturer: ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("Contractor:   ___________________________", styles["Normal"]))
+    elements.append(Spacer(1, 24))
+
+    # Build PDF with page numbers
+    doc.build(
+        elements,
+        onFirstPage=lambda c, d: add_page_number_and_qr(c, d, mo['code']),
+        onLaterPages=lambda c, d: add_page_number_and_qr(c, d, mo['code'])
+    )
+    buffer.seek(0)
+    return Response(
+        buffer.read(),
+        media_type="application/pdf",
+        headers = {"Content-Disposition": f"inline; filename=manufacturing_receipt_{mo['code']}.pdf"}
+    )

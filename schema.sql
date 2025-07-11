@@ -4,6 +4,8 @@ PRAGMA recursive_triggers = ON;
 CREATE TABLE IF NOT EXISTS bom (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file BLOB,
+    file_name TEXT,
+    file_type TEXT,
     instructions TEXT NOT NULL
 );
 
@@ -13,9 +15,11 @@ CREATE TABLE IF NOT EXISTS bom_line (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bom_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
+    lot_id INTEGER, -- optional: specific lot for this bom line
     quantity REAL DEFAULT 1,
     FOREIGN KEY(bom_id) REFERENCES bom(id),
-    FOREIGN KEY(item_id) REFERENCES item(id)
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
 );
 
 -- Currency Table
@@ -78,10 +82,12 @@ CREATE TABLE IF NOT EXISTS item (
     cost_currency_id INTEGER,         -- NEW: currency for cost
     purchase_price REAL,              -- Optional: last purchase price
     purchase_currency_id INTEGER,     -- Optional: currency for purchase price
+    bom_id INTEGER,
     FOREIGN KEY(route_id) REFERENCES route(id),
     FOREIGN KEY(vendor_id) REFERENCES partner(id),
     FOREIGN KEY(cost_currency_id) REFERENCES currency(id),
-    FOREIGN KEY(purchase_currency_id) REFERENCES currency(id)
+    FOREIGN KEY(purchase_currency_id) REFERENCES currency(id),
+    FOREIGN KEY(bom_id) REFERENCES bom(id)
 );
 
 -- Create lot
@@ -199,12 +205,14 @@ CREATE TABLE IF NOT EXISTS stock_adjustment (
     delta REAL NOT NULL, -- change in available quantity
     reserved_delta REAL DEFAULT 0, -- change in reserved quantity
     reason TEXT,
+    route_id INTEGER, -- optional route for this adjustment
     partner_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(location_id) REFERENCES location(id),
     FOREIGN KEY(lot_id) REFERENCES lot(id),
-    FOREIGN KEY(partner_id) REFERENCES partner(id)
+    FOREIGN KEY(partner_id) REFERENCES partner(id),
+    FOREIGN KEY(route_id) REFERENCES route(id)
 );
 
 -- Create picking
@@ -412,6 +420,25 @@ CREATE TABLE IF NOT EXISTS return_line (
     FOREIGN KEY(refund_discount_id) REFERENCES discount(id)
 );
 
+-- Manufacturing Order
+CREATE TABLE IF NOT EXISTS manufacturing_order (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    partner_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,         -- The finished product to manufacture
+    quantity REAL NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('draft','confirmed','done','cancelled')) DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    planned_start DATETIME,
+    planned_end DATETIME,
+    origin TEXT,
+    trigger_id INTEGER,               -- Link to the trigger that caused this MO
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(trigger_id) REFERENCES trigger(id),
+    FOREIGN KEY(partner_id) REFERENCES partner(id)
+);
+
+
 -- Rules
 CREATE TABLE IF NOT EXISTS rule (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -438,7 +465,7 @@ CREATE TABLE IF NOT EXISTS route (
 CREATE TABLE IF NOT EXISTS trigger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     
-    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order')) NOT NULL,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order', 'manufacturing_order')) NOT NULL,
     origin_id INTEGER,
 
     trigger_type TEXT NOT NULL CHECK (trigger_type IN ('demand','supply')),
@@ -489,32 +516,89 @@ CREATE TABLE IF NOT EXISTS debug_log (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+
 -- trigger trg_return_line_split_and_lot
 DROP TRIGGER IF EXISTS trg_return_line_split_and_lot;
 CREATE TRIGGER trg_return_line_split_and_lot
 AFTER INSERT ON return_line
 BEGIN
-    -- For each new return_line (quantity=1), create a lot and assign it
+    -- 1. Create a new lot for this return line
     INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
     VALUES (
         NEW.item_id,
-        'RET-' || hex(randomblob(4)),  -- Short, unique lot number -- 'RET-' || NEW.return_order_id || '-' || NEW.id || '-' || strftime('%Y%m%d%H%M%f','now'),
+        'RET-' || hex(randomblob(4)),
         'return_order',
         NEW.return_order_id,
         'pending',
         'Return from customer'
     );
 
-    UPDATE return_line
-    SET lot_id = (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1)
-    WHERE id = NEW.id;
-END;
+    -- 2. Get the new lot id (most recent for this item/return)
+    -- Use a subquery for all subsequent operations
+    -- This is the lot that was just created
+    -- (If you expect multiple lots per return_line, adapt accordingly)
+    -- We'll use this subquery repeatedly:
+    --   (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1)
 
--- Trigger: on return order creation, create supply trigger
-DROP TRIGGER IF EXISTS trg_return_line_create_supply_trigger;
-CREATE TRIGGER trg_return_line_create_supply_trigger
-AFTER INSERT ON return_line
-BEGIN
+    -- 3. Assign the lot to the return line
+    UPDATE return_line
+    SET lot_id = (
+        SELECT id FROM lot
+        WHERE origin_model = 'return_order'
+          AND origin_id = NEW.return_order_id
+          AND item_id = NEW.item_id
+        ORDER BY id DESC LIMIT 1
+    )
+    WHERE id = NEW.id;
+
+    -- 4. Find the customer location for this return
+    -- (Assumes one location per customer)
+    -- Use this subquery for location:
+    --   (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1)
+
+    -- 5. Ensure stock record for item with lot_id IS NULL exists
+    INSERT INTO stock (item_id, location_id, lot_id, quantity, reserved_quantity)
+    SELECT NEW.item_id,
+           (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1),
+           NULL,
+           0,
+           0
+    WHERE NOT EXISTS (
+        SELECT 1 FROM stock
+        WHERE item_id = NEW.item_id
+          AND location_id = (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1)
+          AND lot_id IS NULL
+    );
+
+    -- 6. Decrease stock for the item (without lot) at the customer's location
+    UPDATE stock
+    SET quantity = quantity - NEW.quantity
+    WHERE item_id = NEW.item_id
+      AND location_id = (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1)
+      AND lot_id IS NULL;
+
+    -- 7. Ensure stock record for the returned lot exists
+    INSERT INTO stock (item_id, location_id, lot_id, quantity, reserved_quantity)
+    SELECT NEW.item_id,
+           (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1),
+           (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1),
+           0,
+           0
+    WHERE NOT EXISTS (
+        SELECT 1 FROM stock
+        WHERE item_id = NEW.item_id
+          AND location_id = (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1)
+          AND lot_id = (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1)
+    );
+
+    -- 8. Increase stock for the returned lot
+    UPDATE stock
+    SET quantity = quantity + NEW.quantity
+    WHERE item_id = NEW.item_id
+      AND location_id = (SELECT l.id FROM location l JOIN return_order ro ON ro.id = NEW.return_order_id WHERE l.partner_id = ro.partner_id LIMIT 1)
+      AND lot_id = (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1);
+
+    -- 9. Create the supply trigger for the return, with the correct lot_id
     INSERT INTO trigger (
         origin_model,
         origin_id,
@@ -534,12 +618,54 @@ BEGIN
         (SELECT id FROM route WHERE name = 'Return Route'),
         NEW.item_id,
         (SELECT id FROM zone WHERE code = 'ZON09'), -- Customer Area
-        1,
-        NEW.lot_id,
+        NEW.quantity,
+        (SELECT id FROM lot WHERE origin_model = 'return_order' AND origin_id = NEW.return_order_id AND item_id = NEW.item_id ORDER BY id DESC LIMIT 1),
         'inbound',
         'draft'
-    WHERE NEW.quantity = 1;
+    WHERE NEW.quantity > 0;
 END;
+
+
+DROP TRIGGER IF EXISTS trg_manufacturing_order_done_consume_and_produce;
+CREATE TRIGGER trg_manufacturing_order_done_consume_and_produce
+AFTER UPDATE OF status ON manufacturing_order
+WHEN NEW.status = 'done' AND OLD.status != 'done'
+BEGIN
+    -- 1. Consume BOM components
+    INSERT INTO stock_adjustment (item_id, location_id, lot_id, delta, reason)
+    SELECT
+        bl.item_id,
+        (SELECT lz.location_id FROM location_zone lz WHERE lz.zone_id = (SELECT id FROM zone WHERE code = 'ZON_PROD') LIMIT 1),
+        NULL,
+        -1 * bl.quantity * NEW.quantity,
+        'Consumed for MO ' || NEW.code
+    FROM bom_line bl
+    JOIN item i ON i.bom_id = bl.bom_id
+    WHERE i.id = NEW.item_id;
+
+    -- 2. Create a new lot for the finished product
+    INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
+    VALUES (
+        NEW.item_id,
+        'MO-' || NEW.code || '-' || hex(randomblob(4)),
+        'manufacturing_order',
+        NEW.id,
+        'pending',
+        'Produced by MO ' || NEW.code
+    );
+
+    -- 3. Stock adjustment for finished product at production location with new lot and route_id
+    INSERT INTO stock_adjustment (item_id, location_id, lot_id, delta, reason, route_id)
+    VALUES (
+        NEW.item_id,
+        (SELECT lz.location_id FROM location_zone lz WHERE lz.zone_id = (SELECT id FROM zone WHERE code = 'ZON_PROD') LIMIT 1),
+        (SELECT id FROM lot WHERE origin_model = 'manufacturing_order' AND origin_id = NEW.id ORDER BY id DESC LIMIT 1),
+        NEW.quantity,
+        'Produced by MO ' || NEW.code,
+        (SELECT id FROM route WHERE name = 'Manufacturing Output')
+    );
+END;
+
 
 -- Update returned_quantity on order_line when a return_order is confirmed
 DROP TRIGGER IF EXISTS trg_confirm_return_order_update_returned_quantity;
@@ -611,6 +737,7 @@ BEGIN
         origin_id,
         trigger_type,
         trigger_item_id,
+        trigger_route_id,
         trigger_zone_id,
         trigger_item_quantity,
         trigger_lot_id,
@@ -622,6 +749,7 @@ BEGIN
         NEW.id,
         'supply',
         NEW.item_id,
+        NEW.route_id,
         lz.zone_id,
         NEW.delta,
         NEW.lot_id,
@@ -667,9 +795,7 @@ BEGIN
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
-
-    -- After resolving interventions, also create a supply trigger for push chains
-
+    -- Only create a supply trigger if there is no unresolved intervention for this item/zone/lot
     INSERT INTO trigger (
         origin_model,
         origin_id,
@@ -693,7 +819,22 @@ BEGIN
         'draft'
     FROM location_zone lz
     WHERE lz.location_id = NEW.location_id
-    AND (NEW.quantity - NEW.reserved_quantity) > 0;
+    AND (NEW.quantity - NEW.reserved_quantity) > 0
+    AND NOT EXISTS (
+        SELECT 1 FROM intervention i
+        JOIN move m ON m.id = i.move_id
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+        AND m.item_id = NEW.item_id
+        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND i.resolved = 0
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM move m
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+        AND m.item_id = NEW.item_id
+        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND m.status IN ('waiting')
+    );
 END;
 
 
@@ -731,7 +872,7 @@ BEGIN
         LIMIT 1
     );
 
-    -- After resolving interventions, also create a supply trigger for push chains
+    -- Only create a supply trigger if there is no unresolved intervention for this item/zone/lot
     INSERT INTO trigger (
         origin_model,
         origin_id,
@@ -755,7 +896,22 @@ BEGIN
         'draft'
     FROM location_zone lz
     WHERE lz.location_id = NEW.location_id
-    AND (NEW.quantity - NEW.reserved_quantity) > 0;
+    AND (NEW.quantity - NEW.reserved_quantity) > 0
+    AND NOT EXISTS (
+        SELECT 1 FROM intervention i
+        JOIN move m ON m.id = i.move_id
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+        AND m.item_id = NEW.item_id
+        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND i.resolved = 0
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM move m
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+        AND m.item_id = NEW.item_id
+        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND m.status IN ('waiting')
+    );
 END;
 
 
@@ -926,6 +1082,39 @@ BEGIN
     WHERE pol.purchase_order_id = NEW.id;
 END;
 
+DROP TRIGGER IF EXISTS trg_manufacturing_order_confirmed_create_component_triggers;
+CREATE TRIGGER trg_manufacturing_order_confirmed_create_component_triggers
+AFTER UPDATE OF status ON manufacturing_order
+WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
+BEGIN
+    INSERT INTO trigger (
+        origin_model,
+        origin_id,
+        trigger_type,
+        trigger_route_id,
+        trigger_item_id,
+        trigger_zone_id,
+        trigger_item_quantity,
+        trigger_lot_id,
+        type,
+        status
+    )
+    SELECT
+        'manufacturing_order',
+        NEW.id,
+        'demand',
+        (SELECT id FROM route WHERE name = 'Manufacturing Supply'),
+        bl.item_id,
+        (SELECT id FROM zone WHERE code = 'ZON_PROD'),
+        bl.quantity * NEW.quantity,
+        NULL,
+        'internal',
+        'draft'
+    FROM item i
+    JOIN bom_line bl ON bl.bom_id = i.bom_id
+    WHERE i.id = NEW.item_id
+      AND i.bom_id IS NOT NULL;
+END;
 
 -- Trigger: On trigger creation, evaluate and link applicable rules or set to intervene
 CREATE TRIGGER trg_trigger_evaluate_rules
@@ -1043,12 +1232,41 @@ BEGIN
     WHERE id = NEW.id;
 END;
 
+
 DROP TRIGGER IF EXISTS trg_rule_trigger_create_po_on_buy;
 CREATE TRIGGER trg_rule_trigger_create_po_on_buy
 AFTER INSERT ON rule_trigger
 WHEN (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
 BEGIN
-    -- 1. Find or create a draft purchase order for this vendor
+    -- 1. If item has a BOM, create a manufacturing order and demand triggers for BOM components
+    INSERT INTO manufacturing_order (code, partner_id, item_id, quantity, status, origin, trigger_id)
+    SELECT
+        'MO_' || hex(randomblob(4)),
+        -- Use the partner_id from the trigger's origin
+        CASE
+            WHEN t.origin_model = 'sale_order' THEN (SELECT partner_id FROM sale_order WHERE id = t.origin_id)
+            WHEN t.origin_model = 'transfer_order' THEN (SELECT partner_id FROM transfer_order WHERE id = t.origin_id)
+            WHEN t.origin_model = 'purchase_order' THEN (SELECT partner_id FROM purchase_order WHERE id = t.origin_id)
+            WHEN t.origin_model = 'return_order' THEN (SELECT partner_id FROM return_order WHERE id = t.origin_id)
+            ELSE (SELECT id FROM partner WHERE name = 'Owner A' LIMIT 1) -- fallback to company/owner
+        END,
+        t.trigger_item_id,
+        t.trigger_item_quantity,
+        'draft',
+        'Auto-created for pull_or_buy trigger (MO, item_id=' || t.trigger_item_id || ')',
+        t.id
+    FROM "trigger" t
+    JOIN item i ON i.id = t.trigger_item_id
+    WHERE t.id = NEW.trigger_id
+      AND i.bom_id IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM manufacturing_order mo
+          WHERE mo.status = 'draft'
+            AND mo.item_id = t.trigger_item_id
+            AND mo.trigger_id = t.id
+      );
+
+    -- 2. If item does NOT have a BOM, fallback to purchase order logic (as before)
     INSERT INTO purchase_order (status, origin, partner_id, code)
     SELECT
         'draft',
@@ -1059,10 +1277,9 @@ BEGIN
         SELECT 1 FROM purchase_order po
         WHERE po.status = 'draft'
         AND po.partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
-    );
+    )
+    AND (SELECT bom_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) IS NULL;
 
-    -- 2. Insert or update the purchase order line for the missing quantity
-    -- First, try to update an existing line
     UPDATE purchase_order_line
     SET quantity = quantity + (SELECT trigger_item_quantity FROM "trigger" WHERE id = NEW.trigger_id)
     WHERE purchase_order_id = (
@@ -1073,16 +1290,16 @@ BEGIN
         )
       AND item_id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)
       AND IFNULL(lot_id, -1) = IFNULL((SELECT trigger_lot_id FROM "trigger" WHERE id = NEW.trigger_id), -1)
-      AND route_id = (SELECT trigger_route_id FROM "trigger" WHERE id = NEW.trigger_id);
+      AND route_id = (SELECT trigger_route_id FROM "trigger" WHERE id = NEW.trigger_id)
+      AND (SELECT bom_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) IS NULL;
 
-    -- Then, if no line was updated, insert a new one
     INSERT INTO purchase_order_line (
         purchase_order_id, item_id, lot_id, quantity, route_id, price, currency_id, cost, cost_currency_id
     )
     SELECT
         (SELECT id FROM purchase_order
          WHERE status = 'draft'
-         AND partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
+         AND partner_id = (SELECT vendor_id FROM item WHERE id = t.trigger_item_id)
          ORDER BY id DESC LIMIT 1),
         t.trigger_item_id,
         t.trigger_lot_id,
@@ -1106,8 +1323,10 @@ BEGIN
           AND pol.item_id = t.trigger_item_id
           AND IFNULL(pol.lot_id, -1) = IFNULL(t.trigger_lot_id, -1)
           AND pol.route_id = t.trigger_route_id
-    );
+      )
+      AND i.bom_id IS NULL;
 END;
+
 
 -- Trigger: Assign or create picking for move
 CREATE TRIGGER trg_move_assign_picking
@@ -1228,6 +1447,7 @@ BEGIN
 END;
 
 
+
 -- Trigger: On move inserted, update move status
 CREATE TRIGGER trg_move_auto_confirm
 AFTER INSERT ON move
@@ -1298,14 +1518,20 @@ BEGIN
          FROM location_zone tgt_lz
          JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
          WHERE tgt_lz.zone_id = NEW.target_id
-           AND (s.lot_id = NEW.lot_id OR (NEW.lot_id IS NULL AND s.lot_id IS NULL))
+           AND (
+                (NEW.lot_id IS NULL)
+                OR (s.lot_id = NEW.lot_id)
+            )
          ORDER BY s.quantity DESC
          LIMIT 1),
         (SELECT tgt_lz.location_id
          FROM location_zone tgt_lz
          LEFT JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
          WHERE tgt_lz.zone_id = NEW.target_id
-           AND (s.lot_id = NEW.lot_id OR (NEW.lot_id IS NULL AND s.lot_id IS NULL))
+           AND (
+                (NEW.lot_id IS NULL)
+                OR (s.lot_id = NEW.lot_id)
+            )
            AND (s.quantity IS NULL OR s.quantity = 0)
          LIMIT 1),
         (SELECT tgt_lz.location_id
@@ -1336,7 +1562,10 @@ BEGIN
       AND s.item_id = NEW.item_id
       AND (s.quantity - s.reserved_quantity) > 0
       AND (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0)) > 0
-      AND (NEW.lot_id IS NULL OR s.lot_id = NEW.lot_id) -- <--- Only allocate from the move's lot if set
+      AND (
+            (NEW.lot_id IS NULL)
+            OR (s.lot_id = NEW.lot_id)
+        )
     ORDER BY s.lot_id -- FIFO or your preferred lot picking logic
     ;
 
@@ -1369,12 +1598,14 @@ BEGIN
     AND NOT EXISTS (
         SELECT 1 FROM trigger t
         WHERE t.trigger_type = 'demand'
-            AND t.trigger_route_id = NEW.route_id
-            AND t.trigger_item_id = NEW.item_id
-            AND t.trigger_zone_id = NEW.source_id
-            AND t.trigger_item_quantity = (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
-            AND (t.trigger_lot_id = NEW.lot_id OR (t.trigger_lot_id IS NULL AND NEW.lot_id IS NULL))
-            AND t.status = 'draft'
+        AND t.trigger_route_id = NEW.route_id
+        AND t.trigger_item_id = NEW.item_id
+        AND t.trigger_zone_id = NEW.source_id
+        AND t.trigger_item_quantity = (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
+        AND (t.trigger_lot_id = NEW.lot_id OR (t.trigger_lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND t.status = 'draft'
+        AND t.origin_id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id)
+        AND t.origin_model = (SELECT origin_model FROM trigger WHERE id = NEW.trigger_id)
     );
         
 
@@ -1466,7 +1697,10 @@ BEGIN
         JOIN location_zone lz ON lz.location_id = s.location_id
         WHERE lz.zone_id = NEW.source_id
         AND s.item_id = NEW.item_id
-        AND (s.lot_id = NEW.lot_id OR (s.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND (
+            (NEW.lot_id IS NULL)
+            OR (s.lot_id = NEW.lot_id)
+        )
     );
 
     
@@ -1479,19 +1713,21 @@ BEGIN
     SET is_terminal = 1,
         status = 'intervene'
     WHERE id = NEW.id
-      AND (SELECT IFNULL(SUM(quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
-      AND NOT EXISTS (
+        AND (SELECT IFNULL(SUM(quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
+        AND NOT EXISTS (
             SELECT 1 FROM trigger t
             WHERE t.trigger_item_id = NEW.item_id
-              AND t.trigger_zone_id = NEW.source_id
-              AND t.status = 'draft'
-              AND t.trigger_item_quantity = (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
-              AND (t.trigger_lot_id = NEW.lot_id OR (t.trigger_lot_id IS NULL AND NEW.lot_id IS NULL))
-              AND EXISTS (
-                  SELECT 1 FROM rule_trigger rt
-                  WHERE rt.trigger_id = t.id
-              )
-      );
+            AND t.trigger_zone_id = NEW.source_id
+            AND t.status = 'draft'
+            AND t.trigger_item_quantity = (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
+            AND (t.trigger_lot_id = NEW.lot_id OR (t.trigger_lot_id IS NULL AND NEW.lot_id IS NULL))
+            AND t.origin_id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id)
+            AND t.origin_model = (SELECT origin_model FROM trigger WHERE id = NEW.trigger_id)
+            AND EXISTS (
+                SELECT 1 FROM rule_trigger rt
+                WHERE rt.trigger_id = t.id
+            )
+        );
 
     INSERT INTO debug_log (event, move_id, info)
     SELECT 'move_fulfillment_check', NEW.id, 'Move set to intervene after allocation attempt'
@@ -1504,11 +1740,16 @@ BEGIN
         0,
         CASE
             WHEN (SELECT action FROM rule WHERE id = NEW.rule_id) = 'pull_or_buy'
-            THEN 'Not enough stock. Purchase order created and waiting for confirmation: ' ||
-                (SELECT code FROM purchase_order
-                WHERE status = 'draft'
-                AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
-                ORDER BY id DESC LIMIT 1)
+            THEN
+                CASE
+                    WHEN (SELECT bom_id FROM item WHERE id = NEW.item_id) IS NOT NULL
+                    THEN 'Not enough stock. Manufacturing order created and waiting for confirmation.'
+                    ELSE 'Not enough stock. Purchase order created and waiting for confirmation: ' ||
+                        (SELECT code FROM purchase_order
+                        WHERE status = 'draft'
+                        AND partner_id = (SELECT vendor_id FROM item WHERE id = NEW.item_id)
+                        ORDER BY id DESC LIMIT 1)
+                END
             WHEN (SELECT action FROM rule WHERE id = NEW.rule_id) = 'push'
             THEN 'Supply not further handled: no push rule applies for this zone. Interventions will be resolved at the target location when stock is available.'
             ELSE 'Not enough stock and no further rules to handle demand. Internal move, purchase order, or stock adjustment is expected to resolve this issue.'
@@ -1527,6 +1768,8 @@ BEGIN
             AND t.status = 'draft'
             AND t.trigger_item_quantity = (NEW.quantity - IFNULL((SELECT SUM(quantity) FROM move_line WHERE move_id = NEW.id), 0))
             AND (t.trigger_lot_id = NEW.lot_id OR (t.trigger_lot_id IS NULL AND NEW.lot_id IS NULL))
+            AND t.origin_id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id)
+            AND t.origin_model = (SELECT origin_model FROM trigger WHERE id = NEW.trigger_id)
         );
 END;
 
@@ -1561,7 +1804,29 @@ BEGIN
 END;
 
 
+-- Prevent a BOM line from referencing its own parent item
+DROP TRIGGER IF EXISTS trg_bom_line_no_self_reference;
+CREATE TRIGGER trg_bom_line_no_self_reference
+BEFORE INSERT ON bom_line
+BEGIN
+    SELECT
+        CASE
+            WHEN (SELECT id FROM item WHERE bom_id = NEW.bom_id) = NEW.item_id
+            THEN RAISE(ABORT, 'A BOM line cannot reference its own parent item.')
+        END;
+END;
 
+-- Also prevent on update
+DROP TRIGGER IF EXISTS trg_bom_line_no_self_reference_update;
+CREATE TRIGGER trg_bom_line_no_self_reference_update
+BEFORE UPDATE ON bom_line
+BEGIN
+    SELECT
+        CASE
+            WHEN (SELECT id FROM item WHERE bom_id = NEW.bom_id) = NEW.item_id
+            THEN RAISE(ABORT, 'A BOM line cannot reference its own parent item.')
+        END;
+END;
 
 
 -- VIEWS
@@ -1719,6 +1984,9 @@ INSERT INTO zone (code, description, route_id) VALUES
 ('ZON09', 'Customer Area', 1),
 ('ZON10', 'Employee Area', 1);
 
+-- Add ZON_PROD (Production Zone)
+INSERT INTO zone (code, description, route_id)
+VALUES ('ZON_PROD', 'Production/Manufacturing Zone', 1);
 
 -- -- Locations
 INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description) VALUES
@@ -1872,6 +2140,13 @@ INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, descr
 -- -- ('Customer B', 0, 0, 0, 1, (SELECT id FROM partner WHERE name = 'Customer B'), 'Customer B'),
 -- -- ('Vendor A', 0, 0, 0, 1, (SELECT id FROM partner WHERE name = 'Supplier A'), 'Vendor A');
 
+-- Add a production location (or more if needed)
+INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description)
+VALUES
+('LOC_PROD_1', 50, 0, 0, 5, 5, 3, 1, NULL, 'Production Area 1'),
+('LOC_PROD_2', 55, 0, 0, 5, 5, 3, 1, NULL, 'Production Area 2');
+
+
 -- Location Zones
 INSERT INTO location_zone (location_id, zone_id) VALUES
 ((SELECT id FROM location WHERE code = 'LOC01.1'), (SELECT id FROM zone WHERE code = 'ZON01')),
@@ -1911,6 +2186,9 @@ INSERT INTO location_zone (location_id, zone_id)
 SELECT id, (SELECT id FROM zone WHERE code = 'ZON06') FROM location
 WHERE code LIKE 'LOC_C_%' OR code LIKE 'LOC_D_%';
 
+-- Assign production locations to ZON_PROD
+INSERT INTO location_zone (location_id, zone_id)
+SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE code IN ('LOC_PROD_1', 'LOC_PROD_2');
 
 -- -- Row A–F (y=0): ZON02 for A/B/E/F, ZON06 for C/D
 -- ((SELECT id FROM location WHERE code = 'LOC_A_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
@@ -2083,6 +2361,26 @@ INSERT INTO item (
 ('Item Big B', 'SKU002', 'BAR002', 'big', 'Big item B', NULL, (SELECT id FROM partner WHERE name = 'Supplier B'),
     15.00, (SELECT id FROM currency WHERE code='EUR'), 16.00, (SELECT id FROM currency WHERE code='EUR'));
 
+-- Seed a new item that is a kit/product with a BOM
+INSERT INTO item (
+    name, sku, barcode, size, description, route_id, vendor_id,
+    cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id
+) VALUES (
+    'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big', 'Kit consisting of Small A and Big B', NULL, NULL,
+    20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL
+);
+
+-- Create a BOM for Kit Alpha
+INSERT INTO bom (file, instructions) VALUES (NULL, 'Assemble 1x Small A and 2x Big B into Kit Alpha');
+
+-- Link the BOM to Kit Alpha
+UPDATE item SET bom_id = (SELECT id FROM bom WHERE instructions LIKE 'Assemble 1x Small A%') WHERE sku = 'KIT-ALPHA';
+
+-- Add BOM lines: 1x Item Small A, 2x Item Big B
+INSERT INTO bom_line (bom_id, item_id, quantity)
+VALUES
+((SELECT bom_id FROM item WHERE sku = 'KIT-ALPHA'), 1, 1),  -- 1x Small A (item_id=1)
+((SELECT bom_id FROM item WHERE sku = 'KIT-ALPHA'), 2, 2);  -- 2x Big B (item_id=
 
 -- -- Seed currencies
 INSERT INTO currency (code, symbol, name) VALUES
@@ -2109,7 +2407,12 @@ INSERT INTO price_list_item (price_list_id, item_id, price) VALUES
 ((SELECT id FROM price_list WHERE name='Default EUR'), 1, 12.50),
 ((SELECT id FROM price_list WHERE name='Default EUR'), 2, 25.00);
 
-
+INSERT INTO price_list_item (price_list_id, item_id, price)
+VALUES (
+    (SELECT id FROM price_list WHERE name='Default EUR'),
+    (SELECT id FROM item WHERE sku='KIT-ALPHA'),
+    75.95 -- or whatever price you want for the kit
+);
 
 -- -- Purchase order for each vendor
 -- INSERT INTO purchase_order (
@@ -2166,7 +2469,10 @@ JOIN location l ON l.partner_id = p.id;
 -- Routes (set active=1 for all initial routes)
 INSERT INTO route (name, description, active) VALUES
 ('Default', 'Default route for receiving and shipping goods', 1),
-('Return Route', 'Route for customer returns with quality check', 1);
+('Return Route', 'Route for customer returns with quality check', 1),
+('Manufacturing Output', 'Route for finished goods from production to stock', 1),
+('Manufacturing Supply', 'Route for supplying components to production', 1);
+
 
 -- Rules (set active=1 for all initial rules)
 INSERT INTO rule (
@@ -2175,6 +2481,8 @@ INSERT INTO rule (
 ((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1),
+
+((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON02'), (SELECT id FROM zone WHERE code='ZON_PROD'), 0, 1),
 
 ((SELECT id FROM route WHERE name = 'Default'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1),
@@ -2188,6 +2496,22 @@ INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON09'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON02'), 0, 1);
+
+-- RULES FOR MANUFACTURING OUTPUT (finished product leaves ZON_PROD to ZON02)
+-- When a manufacturing_order is completed, finished goods move from ZON_PROD to ZON02 (Stock Zone)
+INSERT INTO rule (route_id, action, source_id, target_id, delay, active)
+VALUES
+((SELECT id FROM route WHERE name = 'Manufacturing Output'), 'push', (SELECT id FROM zone WHERE code = 'ZON_PROD'), (SELECT id FROM zone WHERE code = 'ZON02'), 0, 1),
+
+-- RULES FOR MANUFACTURING SUPPLY (components flow to ZON_PROD)
+-- Demand at ZON_PROD is satisfied from ZON02 (Stock Zone)
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull', (SELECT id FROM zone WHERE code = 'ZON02'), (SELECT id FROM zone WHERE code = 'ZON_PROD'), 0, 1),
+-- If not available in ZON02, pull from ZON05 (Quality Control)
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull', (SELECT id FROM zone WHERE code = 'ZON05'), (SELECT id FROM zone WHERE code = 'ZON02'), 0, 1),
+-- If not available in ZON05, pull from ZON01 (Input)
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code = 'ZON01'), (SELECT id FROM zone WHERE code = 'ZON05'), 0, 1),
+-- Add a push rule for Manufacturing Supply: Vendor Area → Input Zone
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code = 'ZON08'), (SELECT id FROM zone WHERE code = 'ZON01'), 0, 1);
 
 -- Sale order with currency, tax, and discount at creation
 -- INSERT INTO sale_order (

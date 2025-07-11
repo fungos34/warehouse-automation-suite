@@ -65,7 +65,48 @@
     <button type="button" onclick="confirmTransferOrder()">Confirm Order</button>
   </form>
   <div id="transfer-order-lines"></div>
+
+      <hr style="margin:20px 0;">
+
+<!-- Manufacturing Orders Section -->
+  <h4>Manufacturing Orders</h4>
+
+  <!-- Manufacturing Order Creation Form -->
+<form id="mo-create-form" enctype="multipart/form-data">
+    <label>Product:</label>
+    <select id="mo-item-select"></select>
+    <label>Quantity:</label>
+    <input type="number" id="mo-quantity" min="1" value="1">
+    <label>Planned Start:</label>
+    <input type="datetime-local" id="mo-start">
+    <label>Planned End:</label>
+    <input type="datetime-local" id="mo-end">
+    <label>Attach BOM PDF:</label>
+    <input type="file" id="mo-bom-file" accept="application/pdf,image/jpeg">
+    <button type="submit">Create Manufacturing Order</button>
+</form>
+<div id="mo-create-result"></div>
 </div>
+
+      <hr style="margin:20px 0;">
+
+  <select id="mo-select"></select>
+  <button id="mo-confirm-btn">Confirm</button>
+  <button id="mo-cancel-btn">Cancel</button>
+
+  <hr style="margin:20px 0;">
+
+  <select id="mo-select-all"></select>
+<button id="mo-download-btn">Download MO Document (PDF)</button>
+    <div id="mo-result"></div>
+
+    <hr style="margin:20px 0;">
+  <!-- Manufacturing Order Set Done -->
+  <select id="mo-select-confirmed"></select>
+  <button id="mo-done-btn">Set MO to Done</button>
+  
+<select id="mo-select-done"></select>
+<button id="mo-download-receipt-btn">Download Manufacturing Receipt (PDF)</button>
 
     <hr style="margin:20px 0;">
 <!-- Stock Adjustment Section -->

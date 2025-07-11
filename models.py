@@ -85,3 +85,9 @@ class StockAdjustmentIn(BaseModel):
     location_id: int
     delta: int
     reason: str
+
+class ManufacturingOrderCreate(BaseModel):
+    item_id: int
+    quantity: int
+    planned_start: Optional[str] = None
+    planned_end: Optional[str] = None

@@ -240,7 +240,7 @@ async function getOrCreateTransferOrderId() {
         Authorization: 'Bearer ' + jwtToken
     } 
     });
-    currentTransferOrderId = (await resp.json()).transfer_order_id;
+    currentTransferOrderId = (await createResp.json()).transfer_order_id;
     await fetchAndRenderTransferOrderLines();
     return currentTransferOrderId;
 };
@@ -336,8 +336,224 @@ document.getElementById('stock-adjustment-form').onsubmit = async function(e) {
     }
 };
 
+async function fetchManufacturingOrders() {
+    const [mos, items] = await Promise.all([
+        fetch('/manufacturing-orders/?status=draft', {
+            headers: { Authorization: 'Bearer ' + jwtToken }
+        }).then(r => r.json()),
+        fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+    ]);
+    const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
+    const select = document.getElementById('mo-select');
+    if (!select) return; // Prevent error if element is missing
+    select.innerHTML = '';
+    mos.forEach(mo => {
+        const item = itemMap[mo.item_id] || {};
+        const opt = document.createElement('option');
+        opt.value = mo.id;
+        opt.textContent = `#${mo.code} - ${item.sku || ''} ${item.name || ''} x${mo.quantity} (Partner: ${mo.partner_id})`;
+        select.appendChild(opt);
+    });
+}
+
+async function fetchConfirmedManufacturingOrders() {
+    const [mos, items] = await Promise.all([
+        fetch('/manufacturing-orders/?status=confirmed', {
+            headers: { Authorization: 'Bearer ' + jwtToken }
+        }).then(r => r.json()),
+        fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+    ]);
+    const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
+    const select = document.getElementById('mo-select-confirmed');
+    if (!select) return; // Prevent error if element is missing
+    select.innerHTML = '';
+    mos.forEach(mo => {
+        const item = itemMap[mo.item_id] || {};
+        const opt = document.createElement('option');
+        opt.value = mo.id;
+        opt.textContent = `#${mo.code} - ${item.sku || ''} ${item.name || ''} x${mo.quantity} (Partner: ${mo.partner_id})`;
+        select.appendChild(opt);
+    });
+}
+
+// Populate BOM items
+async function loadManufacturingItems() {
+    const items = await fetch('/manufacturing-items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json());
+    const select = document.getElementById('mo-item-select');
+    select.innerHTML = '';
+    items.forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        opt.textContent = `${item.sku} ${item.name}`;
+        select.appendChild(opt);
+    });
+}
+document.getElementById('mo-create-form').onsubmit = async function(e) {
+    e.preventDefault();
+    const item_id = document.getElementById('mo-item-select').value;
+    const quantity = document.getElementById('mo-quantity').value;
+    const planned_start = document.getElementById('mo-start').value;
+    const planned_end = document.getElementById('mo-end').value;
+    const fileInput = document.getElementById('mo-bom-file');
+    let bomFile = fileInput.files[0];
+
+    // 1. Create the MO
+    const resp = await fetch('/manufacturing-orders/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwtToken },
+        body: JSON.stringify({ item_id, quantity, planned_start, planned_end })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+        document.getElementById('mo-create-result').textContent = data.detail || 'Error';
+        return;
+    }
+    document.getElementById('mo-create-result').textContent = `Created: ${data.code}`;
+
+    // 2. If file selected, upload to BOM
+    if (bomFile) {
+        // Get BOM id for the selected item
+        const itemResp = await fetch(`/items/${item_id}`, { headers: { Authorization: 'Bearer ' + jwtToken } });
+        const itemData = await itemResp.json();
+        if (itemData.bom_id) {
+            const formData = new FormData();
+            formData.append('file', bomFile);
+            const uploadResp = await fetch(`/bom/${itemData.bom_id}/file`, {
+                method: 'POST',
+                headers: { Authorization: 'Bearer ' + jwtToken },
+                body: formData
+            });
+            const uploadData = await uploadResp.json();
+            document.getElementById('mo-create-result').textContent += uploadResp.ok
+                ? ' (BOM file uploaded)'
+                : ' (BOM file upload failed)';
+        }
+    }
+};
+
+document.getElementById('mo-done-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select-confirmed').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/done`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    document.getElementById('mo-result').textContent = (await resp.json()).message;
+    fetchManufacturingOrders();
+};
+
+document.getElementById('mo-confirm-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/confirm`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    document.getElementById('mo-result').textContent = (await resp.json()).message;
+    fetchManufacturingOrders();
+};
+
+document.getElementById('mo-cancel-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    document.getElementById('mo-result').textContent = (await resp.json()).message;
+    fetchManufacturingOrders();
+};
+
+document.getElementById('mo-download-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select-all').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/download`, {
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    if (!resp.ok) {
+        alert('Failed to download MO document');
+        return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MO_${moId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+};
+
+document.getElementById('mo-download-receipt-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select-done').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/receipt`, {
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    if (!resp.ok) {
+        alert('Failed to download manufacturing receipt');
+        return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MO_${moId}_receipt.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+};
+
+async function fetchAllManufacturingOrders() {
+    const [mos, items] = await Promise.all([
+        fetch('/manufacturing-orders/', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
+        fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+    ]);
+    const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
+    const select = document.getElementById('mo-select-all');
+    if (!select) return;
+    select.innerHTML = '';
+    mos.forEach(mo => {
+        const item = itemMap[mo.item_id] || {};
+        const opt = document.createElement('option');
+        opt.value = mo.id;
+        opt.textContent = `#${mo.code} - ${item.sku || ''} ${item.name || ''} x${mo.quantity} (${mo.status})`;
+        select.appendChild(opt);
+    });
+}
+
+async function fetchDoneManufacturingOrders() {
+    const [mos, items] = await Promise.all([
+        fetch('/manufacturing-orders/?status=done', {
+            headers: { Authorization: 'Bearer ' + jwtToken }
+        }).then(r => r.json()),
+        fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+    ]);
+    const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
+    const select = document.getElementById('mo-select-done');
+    if (!select) return;
+    select.innerHTML = '';
+    mos.forEach(mo => {
+        const item = itemMap[mo.item_id] || {};
+        const opt = document.createElement('option');
+        opt.value = mo.id;
+        opt.textContent = `#${mo.code} - ${item.sku || ''} ${item.name || ''} x${mo.quantity} (Done)`;
+        select.appendChild(opt);
+    });
+}
 
 
+
+fetchDoneManufacturingOrders();
+fetchAllManufacturingOrders();
+
+// Call this when the warehouse panel is shown:
+fetchConfirmedManufacturingOrders();
+fetchManufacturingOrders();
+
+loadManufacturingItems();
 loadInterventions();
 // Call loadWarehouseItems() and populate target zones on panel load
 loadWarehouseItems();
