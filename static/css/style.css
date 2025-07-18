@@ -22,7 +22,7 @@ body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 #inbound-panel { top: 540px; }
 #sales-panel { top: 700px; }
 
-#customer-panel, #warehouse-panel, #inbound-panel, #sales-panel { display: block; }
+#customer-panel, #warehouse-panel, #inbound-panel, #sales-panel { display: none; }
 
 .panel-drag-handle {
     cursor: move;

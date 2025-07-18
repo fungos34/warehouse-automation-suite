@@ -528,8 +528,8 @@ def download_manufacturing_order_pdf(mo_id: int, username: str = Depends(get_cur
     elements.append(Spacer(1, 12))
 
     # BOM Table with costs
-    elements.append(Paragraph("<b>BOM Components</b>", styles["Heading3"]))
-    bom_data = [["Component", "SKU", "Vendor", "Per Product", "Total for MO", "Unit Cost", "Total Cost"]]
+    elements.append(Paragraph("<b>Bill of Material (BOM)</b>", styles["Heading3"]))
+    bom_data = [["Component", "SKU", "Lot Number", "Vendor", "Per Product", "Total for MO", "Unit Cost", "Total Cost"]]
     total_cost = 0.0
     for bl in bom_lines:
         vendor_name = ""
@@ -540,16 +540,21 @@ def download_manufacturing_order_pdf(mo_id: int, username: str = Depends(get_cur
         total_qty = float(bl["quantity"]) * float(mo["quantity"])
         line_cost = unit_cost * total_qty
         total_cost += line_cost
+        lot_number = "-"
+        if "lot_id" in bl.keys() and bl["lot_id"]:
+            lot_row = conn.execute("SELECT lot_number FROM lot WHERE id = ?", (bl["lot_id"],)).fetchone()
+            lot_number = lot_row["lot_number"] if lot_row and lot_row["lot_number"] else "-"
         bom_data.append([
             bl["component_name"],
             bl["component_sku"],
+            lot_number,
             vendor_name,
             str(bl["quantity"]),
             str(total_qty),
             f"{unit_cost:.2f} {bl['cost_currency'] or ''}",
             f"{line_cost:.2f} {bl['cost_currency'] or ''}"
         ])
-    bom_table = Table(bom_data, colWidths=[120, 60, 80, 70, 70, 60, 60])
+    bom_table = Table(bom_data, colWidths=[90, 60, 110, 70, 50, 60, 50, 50])
     bom_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -557,7 +562,7 @@ def download_manufacturing_order_pdf(mo_id: int, username: str = Depends(get_cur
         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
-        ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('TOPPADDING', (0,0), (-1,0), 6),
     ]))
@@ -691,7 +696,7 @@ def download_manufacturing_receipt_pdf(mo_id: int, username: str = Depends(get_c
 
 
     # BOM Table with costs and lot number (lot number after SKU)
-    elements.append(Paragraph("<b>BOM Components</b>", styles["Heading3"]))
+    elements.append(Paragraph("<b>Bill of Material (BOM)</b>", styles["Heading3"]))
     bom_data = [["Component", "SKU", "Lot Number", "Vendor", "Per Product", "Total for MO", "Unit Cost", "Total Cost"]]
     total_cost = 0.0
     for bl in bom_lines:

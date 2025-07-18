@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS partner (
     billing_zip TEXT,               -- billing zip
     email TEXT,
     phone TEXT,
-    partner_type TEXT CHECK (partner_type IN ('vendor','customer','employee')) NOT NULL DEFAULT 'customer'
+    partner_type TEXT CHECK (partner_type IN ('vendor','customer','employee','carrier')) NOT NULL DEFAULT 'customer'
 );
 
 -- Create company
@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS order_line (
     price_list_id INTEGER,            -- NEW: price list for this line
     cost REAL,                        -- NEW: cost for this line (manufacture/purchase)
     cost_currency_id INTEGER,         -- NEW: currency for cost
-    returned_quantity REAL DEFAULT 0, -- <--- add this line
+    returned_quantity REAL DEFAULT 0,
     FOREIGN KEY(order_id) REFERENCES sale_order(id),
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(route_id) REFERENCES route(id),
@@ -647,7 +647,7 @@ BEGIN
     INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
     VALUES (
         NEW.item_id,
-        'MO-' || NEW.code || '-' || hex(randomblob(4)),
+        NEW.code || '-' || hex(randomblob(4)),
         'manufacturing_order',
         NEW.id,
         'pending',
@@ -722,14 +722,20 @@ BEGIN
     INSERT INTO stock (item_id, location_id, lot_id, quantity, reserved_quantity)
     SELECT NEW.item_id, NEW.location_id, NEW.lot_id, 0, 0
     WHERE NOT EXISTS (
-        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.location_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL))
+        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.location_id AND (
+            NEW.lot_id IS NULL
+            OR lot_id = NEW.lot_id
+        )
     );
 
     -- Update both available and reserved quantities
     UPDATE stock
     SET quantity = quantity + NEW.delta,
         reserved_quantity = reserved_quantity + NEW.reserved_delta
-    WHERE item_id = NEW.item_id AND location_id = NEW.location_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL));
+    WHERE item_id = NEW.item_id AND location_id = NEW.location_id AND (
+        NEW.lot_id IS NULL
+        OR lot_id = NEW.lot_id
+    );
 
     -- Only create a supply trigger if available stock increased
     INSERT INTO trigger (
@@ -773,10 +779,14 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id = NEW.location_id
-          AND m.item_id = NEW.item_id
-          AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
-          AND i.resolved = 0
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+            AND m.item_id = NEW.item_id
+            AND (
+                m.lot_id = NEW.lot_id
+                OR (m.lot_id IS NULL)
+            )
+            AND i.resolved = 0
+            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -788,10 +798,14 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id = NEW.location_id
-          AND m.item_id = NEW.item_id
-          AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
-          AND i.resolved = 0
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+            AND m.item_id = NEW.item_id
+            AND (
+                m.lot_id = NEW.lot_id
+                OR (m.lot_id IS NULL)
+            )
+            AND i.resolved = 0
+            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -825,14 +839,20 @@ BEGIN
         JOIN move m ON m.id = i.move_id
         WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
         AND m.item_id = NEW.item_id
-        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND (
+            m.lot_id = NEW.lot_id
+            OR (m.lot_id IS NULL)
+        )
         AND i.resolved = 0
     )
     AND NOT EXISTS (
         SELECT 1 FROM move m
         WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
         AND m.item_id = NEW.item_id
-        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND (
+            m.lot_id = NEW.lot_id
+            OR (m.lot_id IS NULL)
+        )
         AND m.status IN ('waiting')
     );
 END;
@@ -849,10 +869,14 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id = NEW.location_id
-          AND m.item_id = NEW.item_id
-          AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
-          AND i.resolved = 0
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+            AND m.item_id = NEW.item_id
+            AND (
+                m.lot_id = NEW.lot_id
+                OR (m.lot_id IS NULL)
+            )
+            AND i.resolved = 0
+            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -864,10 +888,14 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id = NEW.location_id
-          AND m.item_id = NEW.item_id
-          AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
-          AND i.resolved = 0
+        WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
+            AND m.item_id = NEW.item_id
+            AND (
+                m.lot_id = NEW.lot_id
+                OR (m.lot_id IS NULL)
+            )
+            AND i.resolved = 0
+            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -902,14 +930,21 @@ BEGIN
         JOIN move m ON m.id = i.move_id
         WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
         AND m.item_id = NEW.item_id
-        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND (
+            m.lot_id = NEW.lot_id
+            OR (m.lot_id IS NULL)
+        )
         AND i.resolved = 0
+
     )
     AND NOT EXISTS (
         SELECT 1 FROM move m
         WHERE m.source_id IN (SELECT zone_id FROM location_zone WHERE location_id = NEW.location_id)
         AND m.item_id = NEW.item_id
-        AND (m.lot_id = NEW.lot_id OR (m.lot_id IS NULL AND NEW.lot_id IS NULL))
+        AND (
+            m.lot_id = NEW.lot_id
+            OR (m.lot_id IS NULL)
+        )
         AND m.status IN ('waiting')
     );
 END;
@@ -927,12 +962,19 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id IN (
-            SELECT location_id FROM location_zone WHERE zone_id = NEW.trigger_zone_id
-        )
-          AND m.item_id = NEW.trigger_item_id
-          AND m.lot_id = NEW.trigger_lot_id
-          AND i.resolved = 0
+        WHERE m.source_id = NEW.trigger_zone_id
+            AND m.item_id = NEW.trigger_item_id
+            AND (m.lot_id = NEW.trigger_lot_id OR m.lot_id IS NULL)
+            AND i.resolved = 0
+            -- AND m.quantity <= (
+            --     SELECT IFNULL(SUM(quantity - reserved_quantity), 0)
+            --     FROM stock
+            --     WHERE item_id = m.item_id
+            --     AND location_id IN (
+            --         SELECT location_id FROM location_zone WHERE zone_id = NEW.trigger_zone_id
+            --     )
+            --     AND (m.lot_id = NEW.trigger_lot_id OR m.lot_id IS NULL)
+            -- )
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -947,23 +989,38 @@ BEGIN
         WHERE m.source_id IN (
             SELECT location_id FROM location_zone WHERE zone_id = NEW.trigger_zone_id
         )
-          AND m.item_id = NEW.trigger_item_id
-          AND m.lot_id = NEW.trigger_lot_id
-          AND i.resolved = 0
+            AND m.item_id = NEW.trigger_item_id
+            AND (m.lot_id = NEW.trigger_lot_id OR m.lot_id IS NULL)
+            AND i.resolved = 0
+            -- AND m.quantity <= (
+            --     SELECT IFNULL(SUM(quantity - reserved_quantity), 0)
+            --     FROM stock
+            --     WHERE item_id = m.item_id
+            --     AND location_id IN (
+            --         SELECT location_id FROM location_zone WHERE zone_id = NEW.trigger_zone_id
+            --     )
+            --     AND (m.lot_id = NEW.trigger_lot_id OR m.lot_id IS NULL)
+            -- )
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
 END;
 
 
--- Trigger: On partner creation, create a location and assign to customer zone
+-- Trigger: On partner creation, create a location and assign to the correct zone with proper naming
 DROP TRIGGER IF EXISTS trg_partner_create_location;
 CREATE TRIGGER trg_partner_create_location
 AFTER INSERT ON partner
 BEGIN
     INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description)
     VALUES (
-        'LOC_PARTNER_' || NEW.id,
+        CASE
+            WHEN NEW.partner_type = 'vendor' THEN 'LOC_VENDOR_' || NEW.id
+            WHEN NEW.partner_type = 'customer' THEN 'LOC_CUSTOMER_' || NEW.id
+            WHEN NEW.partner_type = 'employee' THEN 'LOC_EMPLOYEE_' || NEW.id
+            WHEN NEW.partner_type = 'carrier' THEN 'LOC_CARRIER_' || NEW.id
+            ELSE 'LOC_PARTNER_' || NEW.id
+        END,
         0, 0, 0,
         1, 1, 1,
         1,
@@ -978,9 +1035,11 @@ BEGIN
             WHEN NEW.partner_type = 'vendor' THEN (SELECT id FROM zone WHERE code = 'ZON08')
             WHEN NEW.partner_type = 'customer' THEN (SELECT id FROM zone WHERE code = 'ZON09')
             WHEN NEW.partner_type = 'employee' THEN (SELECT id FROM zone WHERE code = 'ZON10')
+            WHEN NEW.partner_type = 'carrier' THEN (SELECT id FROM zone WHERE code = 'ZON11')
         END
     );
 END;
+
 
 -- Trigger: transfer order status change to 'confirmed', create demand triggers for each order line
 DROP TRIGGER IF EXISTS trg_transfer_order_confirmed;
@@ -1253,7 +1312,7 @@ BEGIN
         t.trigger_item_id,
         t.trigger_item_quantity,
         'draft',
-        'Auto-created for pull_or_buy trigger (MO, item_id=' || t.trigger_item_id || ')',
+        'Auto-created for ' || t.origin_model || '_id=' || t.origin_id || ' (MO, item_id=' || t.trigger_item_id || ')',
         t.id
     FROM "trigger" t
     JOIN item i ON i.id = t.trigger_item_id
@@ -1270,7 +1329,9 @@ BEGIN
     INSERT INTO purchase_order (status, origin, partner_id, code)
     SELECT
         'draft',
-        'Auto-created for pull_or_buy trigger (vendor_id=' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) || ')',
+        'Auto-created for ' || (SELECT origin_model FROM "trigger" WHERE id = NEW.trigger_id)
+        || '_id=' || (SELECT origin_id FROM "trigger" WHERE id = NEW.trigger_id)
+        || ' (vendor_id=' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) || ')',
         (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)),
         'PO_AUTO_' || (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) || '_' || strftime('%Y%m%d%H%M%f','now')
     WHERE NOT EXISTS (
@@ -1390,8 +1451,11 @@ BEGIN
     UPDATE stock
     SET reserved_quantity = reserved_quantity + NEW.quantity
     WHERE item_id = NEW.item_id
-      AND location_id = NEW.source_id
-      AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL));
+        AND location_id = NEW.source_id
+        AND (
+            NEW.lot_id IS NULL
+            OR lot_id = NEW.lot_id
+        );
 END;
 
 
@@ -1405,25 +1469,37 @@ BEGIN
     INSERT INTO stock (item_id, location_id, lot_id, quantity)
     SELECT NEW.item_id, NEW.source_id, NEW.lot_id, 0
     WHERE NOT EXISTS (
-        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.source_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL))
+        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.source_id AND (
+            NEW.lot_id IS NULL
+            OR lot_id = NEW.lot_id
+        )
     );
 
     INSERT INTO stock (item_id, location_id, lot_id, quantity)
     SELECT NEW.item_id, NEW.target_id, NEW.lot_id, 0
     WHERE NOT EXISTS (
-        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.target_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL))
+        SELECT 1 FROM stock WHERE item_id = NEW.item_id AND location_id = NEW.target_id AND (
+            NEW.lot_id IS NULL
+            OR lot_id = NEW.lot_id
+        )
     );
 
     -- Subtract from source location (quantity and reserved_quantity)
     UPDATE stock
     SET quantity = quantity - NEW.done_quantity,
         reserved_quantity = reserved_quantity - NEW.done_quantity
-    WHERE item_id = NEW.item_id AND location_id = NEW.source_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL));
+    WHERE item_id = NEW.item_id AND location_id = NEW.source_id AND (
+        NEW.lot_id IS NULL
+        OR lot_id = NEW.lot_id
+    );
 
     -- Add to target location
     UPDATE stock
     SET quantity = quantity + NEW.done_quantity
-    WHERE item_id = NEW.item_id AND location_id = NEW.target_id AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL));
+    WHERE item_id = NEW.item_id AND location_id = NEW.target_id AND (
+        NEW.lot_id IS NULL
+        OR lot_id = NEW.lot_id
+    );
 
 
     INSERT INTO debug_log (event, move_id, info)
@@ -1470,10 +1546,17 @@ BEGIN
     UPDATE move
     SET status = 'confirmed'
     WHERE status = 'waiting'
-      AND item_id = NEW.item_id
-      AND source_id = NEW.target_id
-      AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL));
-    --   AND reserved_quantity = 0; -- Only progress moves that haven't reserved stock yet
+    AND item_id = NEW.item_id
+    AND source_id = NEW.target_id
+    AND (
+        NEW.lot_id IS NULL
+        OR lot_id = NEW.lot_id
+    );
+    -- AND trigger_id IN (
+    --     SELECT id FROM trigger
+    --     WHERE origin_model = (SELECT origin_model FROM trigger WHERE id = NEW.trigger_id)
+    --         AND origin_id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id)
+    -- );
 
     INSERT INTO debug_log (event, move_id, info)
     VALUES (
@@ -1505,47 +1588,44 @@ BEGIN
         NEW.id,
         NEW.item_id,
         s.location_id,
-    COALESCE(
-        -- Prefer the location linked to the customer (partner)
-        (SELECT l.id
-         FROM location l
-         JOIN location_zone lz ON l.id = lz.location_id
-         WHERE lz.zone_id = NEW.target_id
-           AND l.partner_id = (SELECT partner_id FROM sale_order WHERE id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id))
-         LIMIT 1),
-        -- Fallbacks as before, but now lot-aware
-        (SELECT tgt_lz.location_id
-         FROM location_zone tgt_lz
-         JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
-         WHERE tgt_lz.zone_id = NEW.target_id
-           AND (
-                (NEW.lot_id IS NULL)
-                OR (s.lot_id = NEW.lot_id)
-            )
-         ORDER BY s.quantity DESC
-         LIMIT 1),
-        (SELECT tgt_lz.location_id
-         FROM location_zone tgt_lz
-         LEFT JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
-         WHERE tgt_lz.zone_id = NEW.target_id
-           AND (
-                (NEW.lot_id IS NULL)
-                OR (s.lot_id = NEW.lot_id)
-            )
-           AND (s.quantity IS NULL OR s.quantity = 0)
-         LIMIT 1),
-        (SELECT tgt_lz.location_id
-         FROM location_zone tgt_lz
-         LEFT JOIN (
-             SELECT location_id, SUM(quantity) AS total_qty
-             FROM stock
-             WHERE (lot_id = NEW.lot_id OR (NEW.lot_id IS NULL AND lot_id IS NULL))
-             GROUP BY location_id
-         ) st ON st.location_id = tgt_lz.location_id
-         WHERE tgt_lz.zone_id = NEW.target_id
-         ORDER BY IFNULL(st.total_qty, 0) ASC
-         LIMIT 1)
-    ),
+        COALESCE(
+            -- Prefer the location linked to the customer (partner)
+            (SELECT l.id
+            FROM location l
+            JOIN location_zone lz ON l.id = lz.location_id
+            WHERE lz.zone_id = NEW.target_id
+            AND l.partner_id = (SELECT partner_id FROM sale_order WHERE id = (SELECT origin_id FROM trigger WHERE id = NEW.trigger_id))
+            LIMIT 1),
+            -- Fallback: pick a random location with stock of the item/lot
+            (SELECT tgt_lz.location_id
+            FROM location_zone tgt_lz
+            JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
+            WHERE tgt_lz.zone_id = NEW.target_id
+            AND (
+                    (NEW.lot_id IS NULL)
+                    OR (s.lot_id = NEW.lot_id)
+                )
+            ORDER BY RANDOM()
+            LIMIT 1),
+            -- Fallback: pick a random empty location
+            (SELECT tgt_lz.location_id
+            FROM location_zone tgt_lz
+            LEFT JOIN stock s ON s.location_id = tgt_lz.location_id AND s.item_id = NEW.item_id
+            WHERE tgt_lz.zone_id = NEW.target_id
+            AND (
+                    (NEW.lot_id IS NULL)
+                    OR (s.lot_id = NEW.lot_id)
+                )
+            AND (s.quantity IS NULL OR s.quantity = 0)
+            ORDER BY RANDOM()
+            LIMIT 1),
+            -- Fallback: pick any random location in the zone
+            (SELECT tgt_lz.location_id
+            FROM location_zone tgt_lz
+            WHERE tgt_lz.zone_id = NEW.target_id
+            ORDER BY RANDOM()
+            LIMIT 1)
+        ),
     s.lot_id,
     MIN(
         s.quantity - s.reserved_quantity,
@@ -1785,15 +1865,18 @@ BEGIN
     UPDATE move
     SET status = 'done'
     WHERE status = 'confirmed'
-      AND item_id = NEW.item_id
-      AND (lot_id = NEW.lot_id OR (lot_id IS NULL AND NEW.lot_id IS NULL))
-      AND source_id = NEW.target_id
-      AND (
-        SELECT COUNT(*) FROM move_line WHERE move_id = id AND status != 'done'
-      ) = 0
-      AND (
-        SELECT IFNULL(SUM(done_quantity), 0) FROM move_line WHERE move_id = id
-      ) = quantity;
+        AND item_id = NEW.item_id
+        AND (
+            NEW.lot_id IS NULL
+            OR lot_id = NEW.lot_id
+        )
+        AND source_id = NEW.target_id
+        AND (
+            SELECT COUNT(*) FROM move_line WHERE move_id = id AND status != 'done'
+        ) = 0
+        AND (
+            SELECT IFNULL(SUM(done_quantity), 0) FROM move_line WHERE move_id = id
+        ) = quantity;
 
     INSERT INTO debug_log (event, move_id, info)
     VALUES (
@@ -1970,6 +2053,8 @@ FROM stock s
 LEFT JOIN lot l ON s.lot_id = l.id
 WHERE s.quantity - s.reserved_quantity > 0;
 
+
+
 -- SEED DATA
 -- Zones
 INSERT INTO zone (code, description, route_id) VALUES
@@ -1982,13 +2067,12 @@ INSERT INTO zone (code, description, route_id) VALUES
 ('ZON04', 'Outgoing Zone', 1),
 ('ZON08', 'Vendor Area', 1),
 ('ZON09', 'Customer Area', 1),
-('ZON10', 'Employee Area', 1);
+('ZON10', 'Employee Area', 1),
+('ZON_PROD', 'Production/Manufacturing Zone', 1),
+('ZON11', 'Carrier Area', 1);
 
--- Add ZON_PROD (Production Zone)
-INSERT INTO zone (code, description, route_id)
-VALUES ('ZON_PROD', 'Production/Manufacturing Zone', 1);
 
--- -- Locations
+-- Locations
 INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description) VALUES
 -- Input A/B (left side, away from shelves)
 ('LOC01.1', -10, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input A'),
@@ -2004,148 +2088,280 @@ INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, descr
 
 -- Packing (far right, away from shelves)
 ('LOC03.1', 40, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Default Packing'),
-('LOC03.2', 40, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Priority Packing'),
 
--- ('LOC06.1', 10, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 6A'),
--- ('LOC06.2', 10, 20, 5, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 6B'),
--- ('LOC06.3', 10, 20, 10, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 6C'),
-
--- ('LOC07.1', 15, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 7A'),
--- ('LOC07.2', 15, 0, 5, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 7B'),
--- ('LOC07.3', 15, 0, 10, 4.5, 4.5, 4.5, 1, NULL, 'Shelf 7C'),
--- Row A (y=0)
-('LOC_A_1', 0, 0, 0.05,   4, 1, 2.5, 1, NULL, 'Shelf A Level 1'),
-('LOC_A_2', 0, 0, 3,      4, 1, 2.5, 1, NULL, 'Shelf A Level 2'),
-('LOC_A_3', 0, 0, 6,      4, 1, 2.5, 1, NULL, 'Shelf A Level 3'),
-('LOC_A_4', 0, 0, 9,      4, 1, 2.5, 1, NULL, 'Shelf A Level 4'),
-
-('LOC_B_1', 6, 0, 0,      4, 1, 2.5, 1, NULL, 'Shelf B Level 1'),
-('LOC_B_2', 6, 0, 3,      4, 1, 2.5, 1, NULL, 'Shelf B Level 2'),
-('LOC_B_3', 6, 0, 6,      4, 1, 2.5, 1, NULL, 'Shelf B Level 3'),
-('LOC_B_4', 6, 0, 9,      4, 1, 2.5, 1, NULL, 'Shelf B Level 4'),
-
-('LOC_C_1', 12, 0, 0,     4, 1, 2.5, 1, NULL, 'Shelf C Level 1'),
-('LOC_C_2', 12, 0, 3,     4, 1, 2.5, 1, NULL, 'Shelf C Level 2'),
-('LOC_C_3', 12, 0, 6,     4, 1, 2.5, 1, NULL, 'Shelf C Level 3'),
-('LOC_C_4', 12, 0, 9,     4, 1, 2.5, 1, NULL, 'Shelf C Level 4'),
-
-('LOC_D_1', 18, 0, 0,     4, 1, 2.5, 1, NULL, 'Shelf D Level 1'),
-('LOC_D_2', 18, 0, 3,     4, 1, 2.5, 1, NULL, 'Shelf D Level 2'),
-('LOC_D_3', 18, 0, 6,     4, 1, 2.5, 1, NULL, 'Shelf D Level 3'),
-('LOC_D_4', 18, 0, 9,     4, 1, 2.5, 1, NULL, 'Shelf D Level 4'),
-
-('LOC_E_1', 24, 0, 0,     4, 1, 2.5, 1, NULL, 'Shelf E Level 1'),
-('LOC_E_2', 24, 0, 3,     4, 1, 2.5, 1, NULL, 'Shelf E Level 2'),
-('LOC_E_3', 24, 0, 6,     4, 1, 2.5, 1, NULL, 'Shelf E Level 3'),
-('LOC_E_4', 24, 0, 9,     4, 1, 2.5, 1, NULL, 'Shelf E Level 4'),
-
-('LOC_F_1', 30, 0, 0,     4, 1, 2.5, 1, NULL, 'Shelf F Level 1'),
-('LOC_F_2', 30, 0, 3,     4, 1, 2.5, 1, NULL, 'Shelf F Level 2'),
-('LOC_F_3', 30, 0, 6,     4, 1, 2.5, 1, NULL, 'Shelf F Level 3'),
-('LOC_F_4', 30, 0, 9,     4, 1, 2.5, 1, NULL, 'Shelf F Level 4'),
-
--- Row G (y=10)
-('LOC_A2_1', 0, 10, 0,    4, 1, 2.5, 1, NULL, 'Shelf A2 Level 1'),
-('LOC_A2_2', 0, 10, 3,    4, 1, 2.5, 1, NULL, 'Shelf A2 Level 2'),
-('LOC_A2_3', 0, 10, 6,    4, 1, 2.5, 1, NULL, 'Shelf A2 Level 3'),
-('LOC_A2_4', 0, 10, 9,    4, 1, 2.5, 1, NULL, 'Shelf A2 Level 4'),
-
-('LOC_B2_1', 6, 10, 0,    4, 1, 2.5, 1, NULL, 'Shelf B2 Level 1'),
-('LOC_B2_2', 6, 10, 3,    4, 1, 2.5, 1, NULL, 'Shelf B2 Level 2'),
-('LOC_B2_3', 6, 10, 6,    4, 1, 2.5, 1, NULL, 'Shelf B2 Level 3'),
-('LOC_B2_4', 6, 10, 9,    4, 1, 2.5, 1, NULL, 'Shelf B2 Level 4'),
-
-('LOC_C2_1', 12, 10, 0,   4, 1, 2.5, 1, NULL, 'Shelf C2 Level 1'),
-('LOC_C2_2', 12, 10, 3,   4, 1, 2.5, 1, NULL, 'Shelf C2 Level 2'),
-('LOC_C2_3', 12, 10, 6,   4, 1, 2.5, 1, NULL, 'Shelf C2 Level 3'),
-('LOC_C2_4', 12, 10, 9,   4, 1, 2.5, 1, NULL, 'Shelf C2 Level 4'),
-
-('LOC_D2_1', 18, 10, 0,   4, 1, 2.5, 1, NULL, 'Shelf D2 Level 1'),
-('LOC_D2_2', 18, 10, 3,   4, 1, 2.5, 1, NULL, 'Shelf D2 Level 2'),
-('LOC_D2_3', 18, 10, 6,   4, 1, 2.5, 1, NULL, 'Shelf D2 Level 3'),
-('LOC_D2_4', 18, 10, 9,   4, 1, 2.5, 1, NULL, 'Shelf D2 Level 4'),
-
-('LOC_E2_1', 24, 10, 0,   4, 1, 2.5, 1, NULL, 'Shelf E2 Level 1'),
-('LOC_E2_2', 24, 10, 3,   4, 1, 2.5, 1, NULL, 'Shelf E2 Level 2'),
-('LOC_E2_3', 24, 10, 6,   4, 1, 2.5, 1, NULL, 'Shelf E2 Level 3'),
-('LOC_E2_4', 24, 10, 9,   4, 1, 2.5, 1, NULL, 'Shelf E2 Level 4'),
-
-('LOC_F2_1', 30, 10, 0,   4, 1, 2.5, 1, NULL, 'Shelf F2 Level 1'),
-('LOC_F2_2', 30, 10, 3,   4, 1, 2.5, 1, NULL, 'Shelf F2 Level 2'),
-('LOC_F2_3', 30, 10, 6,   4, 1, 2.5, 1, NULL, 'Shelf F2 Level 3'),
-('LOC_F2_4', 30, 10, 9,   4, 1, 2.5, 1, NULL, 'Shelf F2 Level 4'),
-
--- Row H (y=20)
-('LOC_A3_1', 0, 20, 0,    4, 1, 2.5, 1, NULL, 'Shelf A3 Level 1'),
-('LOC_A3_2', 0, 20, 3,    4, 1, 2.5, 1, NULL, 'Shelf A3 Level 2'),
-('LOC_A3_3', 0, 20, 6,    4, 1, 2.5, 1, NULL, 'Shelf A3 Level 3'),
-('LOC_A3_4', 0, 20, 9,    4, 1, 2.5, 1, NULL, 'Shelf A3 Level 4'),
-
-('LOC_B3_1', 6, 20, 0,    4, 1, 2.5, 1, NULL, 'Shelf B3 Level 1'),
-('LOC_B3_2', 6, 20, 3,    4, 1, 2.5, 1, NULL, 'Shelf B3 Level 2'),
-('LOC_B3_3', 6, 20, 6,    4, 1, 2.5, 1, NULL, 'Shelf B3 Level 3'),
-('LOC_B3_4', 6, 20, 9,    4, 1, 2.5, 1, NULL, 'Shelf B3 Level 4'),
-
-('LOC_C3_1', 12, 20, 0,   4, 1, 2.5, 1, NULL, 'Shelf C3 Level 1'),
-('LOC_C3_2', 12, 20, 3,   4, 1, 2.5, 1, NULL, 'Shelf C3 Level 2'),
-('LOC_C3_3', 12, 20, 6,   4, 1, 2.5, 1, NULL, 'Shelf C3 Level 3'),
-('LOC_C3_4', 12, 20, 9,   4, 1, 2.5, 1, NULL, 'Shelf C3 Level 4'),
-
-('LOC_D3_1', 18, 20, 0,   4, 1, 2.5, 1, NULL, 'Shelf D3 Level 1'),
-('LOC_D3_2', 18, 20, 3,   4, 1, 2.5, 1, NULL, 'Shelf D3 Level 2'),
-('LOC_D3_3', 18, 20, 6,   4, 1, 2.5, 1, NULL, 'Shelf D3 Level 3'),
-('LOC_D3_4', 18, 20, 9,   4, 1, 2.5, 1, NULL, 'Shelf D3 Level 4'),
-
-('LOC_E3_1', 24, 20, 0,   4, 1, 2.5, 1, NULL, 'Shelf E3 Level 1'),
-('LOC_E3_2', 24, 20, 3,   4, 1, 2.5, 1, NULL, 'Shelf E3 Level 2'),
-('LOC_E3_3', 24, 20, 6,   4, 1, 2.5, 1, NULL, 'Shelf E3 Level 3'),
-('LOC_E3_4', 24, 20, 9,   4, 1, 2.5, 1, NULL, 'Shelf E3 Level 4'),
-
-('LOC_F3_1', 30, 20, 0,   4, 1, 2.5, 1, NULL, 'Shelf F3 Level 1'),
-('LOC_F3_2', 30, 20, 3,   4, 1, 2.5, 1, NULL, 'Shelf F3 Level 2'),
-('LOC_F3_3', 30, 20, 6,   4, 1, 2.5, 1, NULL, 'Shelf F3 Level 3'),
-('LOC_F3_4', 30, 20, 9,   4, 1, 2.5, 1, NULL, 'Shelf F3 Level 4'),
-
--- Row I (y=30)
-('LOC_A4_1', 0, 30, 0,    4, 1, 2.5, 1, NULL, 'Shelf A4 Level 1'),
-('LOC_A4_2', 0, 30, 3,    4, 1, 2.5, 1, NULL, 'Shelf A4 Level 2'),
-('LOC_A4_3', 0, 30, 6,    4, 1, 2.5, 1, NULL, 'Shelf A4 Level 3'),
-('LOC_A4_4', 0, 30, 9,    4, 1, 2.5, 1, NULL, 'Shelf A4 Level 4'),
-
-('LOC_B4_1', 6, 30, 0,    4, 1, 2.5, 1, NULL, 'Shelf B4 Level 1'),
-('LOC_B4_2', 6, 30, 3,    4, 1, 2.5, 1, NULL, 'Shelf B4 Level 2'),
-('LOC_B4_3', 6, 30, 6,    4, 1, 2.5, 1, NULL, 'Shelf B4 Level 3'),
-('LOC_B4_4', 6, 30, 9,    4, 1, 2.5, 1, NULL, 'Shelf B4 Level 4'),
-
-('LOC_C4_1', 12, 30, 0,   4, 1, 2.5, 1, NULL, 'Shelf C4 Level 1'),
-('LOC_C4_2', 12, 30, 3,   4, 1, 2.5, 1, NULL, 'Shelf C4 Level 2'),
-('LOC_C4_3', 12, 30, 6,   4, 1, 2.5, 1, NULL, 'Shelf C4 Level 3'),
-('LOC_C4_4', 12, 30, 9,   4, 1, 2.5, 1, NULL, 'Shelf C4 Level 4'),
-
-('LOC_D4_1', 18, 30, 0,   4, 1, 2.5, 1, NULL, 'Shelf D4 Level 1'),
-('LOC_D4_2', 18, 30, 3,   4, 1, 2.5, 1, NULL, 'Shelf D4 Level 2'),
-('LOC_D4_3', 18, 30, 6,   4, 1, 2.5, 1, NULL, 'Shelf D4 Level 3'),
-('LOC_D4_4', 18, 30, 9,   4, 1, 2.5, 1, NULL, 'Shelf D4 Level 4'),
-
-('LOC_E4_1', 24, 30, 0,   4, 1, 2.5, 1, NULL, 'Shelf E4 Level 1'),
-('LOC_E4_2', 24, 30, 3,   4, 1, 2.5, 1, NULL, 'Shelf E4 Level 2'),
-('LOC_E4_3', 24, 30, 6,   4, 1, 2.5, 1, NULL, 'Shelf E4 Level 3'),
-('LOC_E4_4', 24, 30, 9,   4, 1, 2.5, 1, NULL, 'Shelf E4 Level 4'),
-
-('LOC_F4_1', 30, 30, 0,   4, 1, 2.5, 1, NULL, 'Shelf F4 Level 1'),
-('LOC_F4_2', 30, 30, 3,   4, 1, 2.5, 1, NULL, 'Shelf F4 Level 2'),
-('LOC_F4_3', 30, 30, 6,   4, 1, 2.5, 1, NULL, 'Shelf F4 Level 3'),
-('LOC_F4_4', 30, 30, 9,   4, 1, 2.5, 1, NULL, 'Shelf F4 Level 4');
-
--- -- ('Customer B', 0, 0, 0, 1, (SELECT id FROM partner WHERE name = 'Customer B'), 'Customer B'),
--- -- ('Vendor A', 0, 0, 0, 1, (SELECT id FROM partner WHERE name = 'Supplier A'), 'Vendor A');
 
 -- Add a production location (or more if needed)
-INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description)
-VALUES
-('LOC_PROD_1', 50, 0, 0, 5, 5, 3, 1, NULL, 'Production Area 1'),
-('LOC_PROD_2', 55, 0, 0, 5, 5, 3, 1, NULL, 'Production Area 2');
+('LOC_PROD_1', 0, 45, 0, 30, 7, 2, 1, NULL, 'Production Area 1');
 
+
+-- stock locations
+INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description) VALUES
+('LOC_Q1_L1', 0.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q1 Level L1'),
+('LOC_Q1_L2', 0.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q1 Level L2'),
+('LOC_Q1_L3', 0.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q1 Level L3'),
+('LOC_Q1_L4', 0.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q1 Level L4'),
+('LOC_P1_L1', 0.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P1 Level L1'),
+('LOC_P1_L2', 0.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P1 Level L2'),
+('LOC_N1_L1', 0.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N1 Level L1'),
+('LOC_N1_L2', 0.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N1 Level L2'),
+('LOC_M1_L1', 0.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M1 Level L1'),
+('LOC_M1_L2', 0.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M1 Level L2'),
+('LOC_K1_L1', 0.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K1 Level L1'),
+('LOC_K1_L2', 0.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K1 Level L2'),
+('LOC_J1_L1', 0.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J1 Level L1'),
+('LOC_J1_L2', 0.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J1 Level L2'),
+('LOC_H1_L1', 0.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H1 Level L1'),
+('LOC_H1_L2', 0.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H1 Level L2'),
+('LOC_H1_L3', 0.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H1 Level L3'),
+('LOC_H1_L4', 0.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H1 Level L4'),
+('LOC_G1_L1', 0.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G1 Level L1'),
+('LOC_G1_L2', 0.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G1 Level L2'),
+('LOC_G1_L3', 0.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G1 Level L3'),
+('LOC_G1_L4', 0.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G1 Level L4'),
+('LOC_E1_L1', 0.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E1 Level L1'),
+('LOC_E1_L2', 0.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E1 Level L2'),
+('LOC_E1_L3', 0.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E1 Level L3'),
+('LOC_E1_L4', 0.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E1 Level L4'),
+('LOC_D1_L1', 0.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D1 Level L1'),
+('LOC_D1_L2', 0.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D1 Level L2'),
+('LOC_D1_L3', 0.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D1 Level L3'),
+('LOC_D1_L4', 0.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D1 Level L4'),
+('LOC_B1_L1', 0.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B1 Level L1'),
+('LOC_B1_L2', 0.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B1 Level L2'),
+('LOC_B1_L3', 0.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B1 Level L3'),
+('LOC_B1_L4', 0.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B1 Level L4'),
+('LOC_A1_L1', 0.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A1 Level L1'),
+('LOC_A1_L2', 0.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A1 Level L2'),
+('LOC_A1_L3', 0.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A1 Level L3'),
+('LOC_A1_L4', 0.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A1 Level L4'),
+('LOC_Q2_L1', 4.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q2 Level L1'),
+('LOC_Q2_L2', 4.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q2 Level L2'),
+('LOC_Q2_L3', 4.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q2 Level L3'),
+('LOC_Q2_L4', 4.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q2 Level L4'),
+('LOC_P2_L1', 4.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P2 Level L1'),
+('LOC_P2_L2', 4.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P2 Level L2'),
+('LOC_N2_L1', 4.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N2 Level L1'),
+('LOC_N2_L2', 4.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N2 Level L2'),
+('LOC_M2_L1', 4.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M2 Level L1'),
+('LOC_M2_L2', 4.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M2 Level L2'),
+('LOC_K2_L1', 4.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K2 Level L1'),
+('LOC_K2_L2', 4.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K2 Level L2'),
+('LOC_J2_L1', 4.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J2 Level L1'),
+('LOC_J2_L2', 4.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J2 Level L2'),
+('LOC_H2_L1', 4.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H2 Level L1'),
+('LOC_H2_L2', 4.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H2 Level L2'),
+('LOC_H2_L3', 4.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H2 Level L3'),
+('LOC_H2_L4', 4.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H2 Level L4'),
+('LOC_G2_L1', 4.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G2 Level L1'),
+('LOC_G2_L2', 4.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G2 Level L2'),
+('LOC_G2_L3', 4.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G2 Level L3'),
+('LOC_G2_L4', 4.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G2 Level L4'),
+('LOC_E2_L1', 4.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E2 Level L1'),
+('LOC_E2_L2', 4.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E2 Level L2'),
+('LOC_E2_L3', 4.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E2 Level L3'),
+('LOC_E2_L4', 4.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E2 Level L4'),
+('LOC_D2_L1', 4.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D2 Level L1'),
+('LOC_D2_L2', 4.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D2 Level L2'),
+('LOC_D2_L3', 4.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D2 Level L3'),
+('LOC_D2_L4', 4.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D2 Level L4'),
+('LOC_B2_L1', 4.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B2 Level L1'),
+('LOC_B2_L2', 4.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B2 Level L2'),
+('LOC_B2_L3', 4.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B2 Level L3'),
+('LOC_B2_L4', 4.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B2 Level L4'),
+('LOC_A2_L1', 4.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A2 Level L1'),
+('LOC_A2_L2', 4.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A2 Level L2'),
+('LOC_A2_L3', 4.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A2 Level L3'),
+('LOC_A2_L4', 4.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A2 Level L4'),
+('LOC_Q3_L1', 8.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q3 Level L1'),
+('LOC_Q3_L2', 8.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q3 Level L2'),
+('LOC_Q3_L3', 8.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q3 Level L3'),
+('LOC_Q3_L4', 8.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q3 Level L4'),
+('LOC_P3_L1', 8.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P3 Level L1'),
+('LOC_P3_L2', 8.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P3 Level L2'),
+('LOC_N3_L1', 8.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N3 Level L1'),
+('LOC_N3_L2', 8.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N3 Level L2'),
+('LOC_M3_L1', 8.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M3 Level L1'),
+('LOC_M3_L2', 8.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M3 Level L2'),
+('LOC_K3_L1', 8.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K3 Level L1'),
+('LOC_K3_L2', 8.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K3 Level L2'),
+('LOC_J3_L1', 8.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J3 Level L1'),
+('LOC_J3_L2', 8.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J3 Level L2'),
+('LOC_H3_L1', 8.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H3 Level L1'),
+('LOC_H3_L2', 8.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H3 Level L2'),
+('LOC_H3_L3', 8.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H3 Level L3'),
+('LOC_H3_L4', 8.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H3 Level L4'),
+('LOC_G3_L1', 8.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G3 Level L1'),
+('LOC_G3_L2', 8.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G3 Level L2'),
+('LOC_G3_L3', 8.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G3 Level L3'),
+('LOC_G3_L4', 8.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G3 Level L4'),
+('LOC_E3_L1', 8.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E3 Level L1'),
+('LOC_E3_L2', 8.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E3 Level L2'),
+('LOC_E3_L3', 8.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E3 Level L3'),
+('LOC_E3_L4', 8.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E3 Level L4'),
+('LOC_D3_L1', 8.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D3 Level L1'),
+('LOC_D3_L2', 8.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D3 Level L2'),
+('LOC_D3_L3', 8.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D3 Level L3'),
+('LOC_D3_L4', 8.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D3 Level L4'),
+('LOC_B3_L1', 8.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B3 Level L1'),
+('LOC_B3_L2', 8.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B3 Level L2'),
+('LOC_B3_L3', 8.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B3 Level L3'),
+('LOC_B3_L4', 8.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B3 Level L4'),
+('LOC_A3_L1', 8.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A3 Level L1'),
+('LOC_A3_L2', 8.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A3 Level L2'),
+('LOC_A3_L3', 8.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A3 Level L3'),
+('LOC_A3_L4', 8.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A3 Level L4'),
+('LOC_Q4_L1', 12.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q4 Level L1'),
+('LOC_Q4_L2', 12.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q4 Level L2'),
+('LOC_Q4_L3', 12.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q4 Level L3'),
+('LOC_Q4_L4', 12.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q4 Level L4'),
+('LOC_P4_L1', 12.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P4 Level L1'),
+('LOC_P4_L2', 12.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P4 Level L2'),
+('LOC_N4_L1', 12.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N4 Level L1'),
+('LOC_N4_L2', 12.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N4 Level L2'),
+('LOC_M4_L1', 12.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M4 Level L1'),
+('LOC_M4_L2', 12.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M4 Level L2'),
+('LOC_K4_L1', 12.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K4 Level L1'),
+('LOC_K4_L2', 12.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K4 Level L2'),
+('LOC_J4_L1', 12.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J4 Level L1'),
+('LOC_J4_L2', 12.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J4 Level L2'),
+('LOC_H4_L1', 12.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H4 Level L1'),
+('LOC_H4_L2', 12.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H4 Level L2'),
+('LOC_H4_L3', 12.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H4 Level L3'),
+('LOC_H4_L4', 12.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H4 Level L4'),
+('LOC_G4_L1', 12.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G4 Level L1'),
+('LOC_G4_L2', 12.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G4 Level L2'),
+('LOC_G4_L3', 12.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G4 Level L3'),
+('LOC_G4_L4', 12.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G4 Level L4'),
+('LOC_E4_L1', 12.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E4 Level L1'),
+('LOC_E4_L2', 12.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E4 Level L2'),
+('LOC_E4_L3', 12.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E4 Level L3'),
+('LOC_E4_L4', 12.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E4 Level L4'),
+('LOC_D4_L1', 12.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D4 Level L1'),
+('LOC_D4_L2', 12.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D4 Level L2'),
+('LOC_D4_L3', 12.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D4 Level L3'),
+('LOC_D4_L4', 12.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D4 Level L4'),
+('LOC_B4_L1', 12.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B4 Level L1'),
+('LOC_B4_L2', 12.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B4 Level L2'),
+('LOC_B4_L3', 12.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B4 Level L3'),
+('LOC_B4_L4', 12.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B4 Level L4'),
+('LOC_A4_L1', 12.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A4 Level L1'),
+('LOC_A4_L2', 12.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A4 Level L2'),
+('LOC_A4_L3', 12.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A4 Level L3'),
+('LOC_A4_L4', 12.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A4 Level L4'),
+('LOC_Q5_L1', 16.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q5 Level L1'),
+('LOC_Q5_L2', 16.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q5 Level L2'),
+('LOC_Q5_L3', 16.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q5 Level L3'),
+('LOC_Q5_L4', 16.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q5 Level L4'),
+('LOC_P5_L1', 16.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P5 Level L1'),
+('LOC_P5_L2', 16.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P5 Level L2'),
+('LOC_N5_L1', 16.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N5 Level L1'),
+('LOC_N5_L2', 16.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N5 Level L2'),
+('LOC_M5_L1', 16.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M5 Level L1'),
+('LOC_M5_L2', 16.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M5 Level L2'),
+('LOC_K5_L1', 16.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K5 Level L1'),
+('LOC_K5_L2', 16.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K5 Level L2'),
+('LOC_J5_L1', 16.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J5 Level L1'),
+('LOC_J5_L2', 16.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J5 Level L2'),
+('LOC_H5_L1', 16.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H5 Level L1'),
+('LOC_H5_L2', 16.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H5 Level L2'),
+('LOC_H5_L3', 16.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H5 Level L3'),
+('LOC_H5_L4', 16.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H5 Level L4'),
+('LOC_G5_L1', 16.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G5 Level L1'),
+('LOC_G5_L2', 16.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G5 Level L2'),
+('LOC_G5_L3', 16.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G5 Level L3'),
+('LOC_G5_L4', 16.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G5 Level L4'),
+('LOC_E5_L1', 16.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E5 Level L1'),
+('LOC_E5_L2', 16.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E5 Level L2'),
+('LOC_E5_L3', 16.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E5 Level L3'),
+('LOC_E5_L4', 16.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E5 Level L4'),
+('LOC_D5_L1', 16.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D5 Level L1'),
+('LOC_D5_L2', 16.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D5 Level L2'),
+('LOC_D5_L3', 16.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D5 Level L3'),
+('LOC_D5_L4', 16.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D5 Level L4'),
+('LOC_B5_L1', 16.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B5 Level L1'),
+('LOC_B5_L2', 16.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B5 Level L2'),
+('LOC_B5_L3', 16.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B5 Level L3'),
+('LOC_B5_L4', 16.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B5 Level L4'),
+('LOC_A5_L1', 16.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A5 Level L1'),
+('LOC_A5_L2', 16.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A5 Level L2'),
+('LOC_A5_L3', 16.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A5 Level L3'),
+('LOC_A5_L4', 16.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A5 Level L4'),
+('LOC_Q6_L1', 20.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q6 Level L1'),
+('LOC_Q6_L2', 20.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q6 Level L2'),
+('LOC_Q6_L3', 20.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q6 Level L3'),
+('LOC_Q6_L4', 20.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q6 Level L4'),
+('LOC_P6_L1', 20.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P6 Level L1'),
+('LOC_P6_L2', 20.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P6 Level L2'),
+('LOC_N6_L1', 20.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N6 Level L1'),
+('LOC_N6_L2', 20.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N6 Level L2'),
+('LOC_M6_L1', 20.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M6 Level L1'),
+('LOC_M6_L2', 20.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M6 Level L2'),
+('LOC_K6_L1', 20.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K6 Level L1'),
+('LOC_K6_L2', 20.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K6 Level L2'),
+('LOC_J6_L1', 20.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J6 Level L1'),
+('LOC_J6_L2', 20.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J6 Level L2'),
+('LOC_H6_L1', 20.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H6 Level L1'),
+('LOC_H6_L2', 20.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H6 Level L2'),
+('LOC_H6_L3', 20.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H6 Level L3'),
+('LOC_H6_L4', 20.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H6 Level L4'),
+('LOC_G6_L1', 20.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G6 Level L1'),
+('LOC_G6_L2', 20.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G6 Level L2'),
+('LOC_G6_L3', 20.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G6 Level L3'),
+('LOC_G6_L4', 20.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G6 Level L4'),
+('LOC_E6_L1', 20.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E6 Level L1'),
+('LOC_E6_L2', 20.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E6 Level L2'),
+('LOC_E6_L3', 20.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E6 Level L3'),
+('LOC_E6_L4', 20.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E6 Level L4'),
+('LOC_D6_L1', 20.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D6 Level L1'),
+('LOC_D6_L2', 20.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D6 Level L2'),
+('LOC_D6_L3', 20.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D6 Level L3'),
+('LOC_D6_L4', 20.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D6 Level L4'),
+('LOC_B6_L1', 20.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B6 Level L1'),
+('LOC_B6_L2', 20.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B6 Level L2'),
+('LOC_B6_L3', 20.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B6 Level L3'),
+('LOC_B6_L4', 20.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B6 Level L4'),
+('LOC_A6_L1', 20.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A6 Level L1'),
+('LOC_A6_L2', 20.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A6 Level L2'),
+('LOC_A6_L3', 20.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A6 Level L3'),
+('LOC_A6_L4', 20.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A6 Level L4'),
+('LOC_Q7_L1', 24.5, 0.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf Q7 Level L1'),
+('LOC_Q7_L2', 24.5, 0.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf Q7 Level L2'),
+('LOC_Q7_L3', 24.5, 0.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf Q7 Level L3'),
+('LOC_Q7_L4', 24.5, 0.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf Q7 Level L4'),
+('LOC_P7_L1', 24.5, 1.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf P7 Level L1'),
+('LOC_P7_L2', 24.5, 1.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf P7 Level L2'),
+('LOC_N7_L1', 24.5, 7.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf N7 Level L1'),
+('LOC_N7_L2', 24.5, 7.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf N7 Level L2'),
+('LOC_M7_L1', 24.5, 8.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf M7 Level L1'),
+('LOC_M7_L2', 24.5, 8.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf M7 Level L2'),
+('LOC_K7_L1', 24.5, 14.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf K7 Level L1'),
+('LOC_K7_L2', 24.5, 14.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf K7 Level L2'),
+('LOC_J7_L1', 24.5, 15.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf J7 Level L1'),
+('LOC_J7_L2', 24.5, 15.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf J7 Level L2'),
+('LOC_H7_L1', 24.5, 21.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf H7 Level L1'),
+('LOC_H7_L2', 24.5, 21.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf H7 Level L2'),
+('LOC_H7_L3', 24.5, 21.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf H7 Level L3'),
+('LOC_H7_L4', 24.5, 21.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf H7 Level L4'),
+('LOC_G7_L1', 24.5, 22.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf G7 Level L1'),
+('LOC_G7_L2', 24.5, 22.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf G7 Level L2'),
+('LOC_G7_L3', 24.5, 22.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf G7 Level L3'),
+('LOC_G7_L4', 24.5, 22.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf G7 Level L4'),
+('LOC_E7_L1', 24.5, 28.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf E7 Level L1'),
+('LOC_E7_L2', 24.5, 28.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf E7 Level L2'),
+('LOC_E7_L3', 24.5, 28.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf E7 Level L3'),
+('LOC_E7_L4', 24.5, 28.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf E7 Level L4'),
+('LOC_D7_L1', 24.5, 29.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf D7 Level L1'),
+('LOC_D7_L2', 24.5, 29.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf D7 Level L2'),
+('LOC_D7_L3', 24.5, 29.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf D7 Level L3'),
+('LOC_D7_L4', 24.5, 29.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf D7 Level L4'),
+('LOC_B7_L1', 24.5, 35.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf B7 Level L1'),
+('LOC_B7_L2', 24.5, 35.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf B7 Level L2'),
+('LOC_B7_L3', 24.5, 35.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf B7 Level L3'),
+('LOC_B7_L4', 24.5, 35.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf B7 Level L4'),
+('LOC_A7_L1', 24.5, 36.5, 0.0, 4, 1, 2.5, 1, NULL, 'Shelf A7 Level L1'),
+('LOC_A7_L2', 24.5, 36.5, 2.5, 4, 1, 2.5, 1, NULL, 'Shelf A7 Level L2'),
+('LOC_A7_L3', 24.5, 36.5, 5.0, 4, 1, 2.5, 1, NULL, 'Shelf A7 Level L3'),
+('LOC_A7_L4', 24.5, 36.5, 7.5, 4, 1, 2.5, 1, NULL, 'Shelf A7 Level L4');
 
 -- Location Zones
 INSERT INTO location_zone (location_id, zone_id) VALUES
@@ -2153,166 +2369,29 @@ INSERT INTO location_zone (location_id, zone_id) VALUES
 ((SELECT id FROM location WHERE code = 'LOC01.2'), (SELECT id FROM zone WHERE code = 'ZON01')),
 ((SELECT id FROM location WHERE code = 'LOC05.1'), (SELECT id FROM zone WHERE code = 'ZON05')),
 ((SELECT id FROM location WHERE code = 'LOC05.2'), (SELECT id FROM zone WHERE code = 'ZON05')),
--- ((SELECT id FROM location WHERE code = 'LOC06.1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC06.2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC06.3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC06.1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC06.2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC06.3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC07.1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC07.2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC07.3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC07.1'), (SELECT id FROM zone WHERE code = 'ZON07')),
--- ((SELECT id FROM location WHERE code = 'LOC07.2'), (SELECT id FROM zone WHERE code = 'ZON07')),
--- ((SELECT id FROM location WHERE code = 'LOC07.3'), (SELECT id FROM zone WHERE code = 'ZON07')),
-
 ((SELECT id FROM location WHERE code = 'LOC03.1'), (SELECT id FROM zone WHERE code = 'ZON03')),
-((SELECT id FROM location WHERE code = 'LOC03.2'), (SELECT id FROM zone WHERE code = 'ZON03')),
 ((SELECT id FROM location WHERE code = 'LOC04.1'), (SELECT id FROM zone WHERE code = 'ZON04')),
 ((SELECT id FROM location WHERE code = 'LOC04.2'), (SELECT id FROM zone WHERE code = 'ZON04'));
 
 -- Assign all shelf locations to Stock Zone (ZON02)
 INSERT INTO location_zone (location_id, zone_id)
 SELECT id, (SELECT id FROM zone WHERE code = 'ZON02') FROM location
-WHERE code LIKE 'LOC_A_%' OR code LIKE 'LOC_B_%' OR code LIKE 'LOC_C_%' OR code LIKE 'LOC_D_%' OR code LIKE 'LOC_E_%' OR code LIKE 'LOC_F_%';
+WHERE code GLOB 'LOC_A?_*' OR code GLOB 'LOC_B?_*' OR code GLOB 'LOC_D?_*' OR code GLOB 'LOC_E?_*' OR code GLOB 'LOC_G?_*' OR code GLOB 'LOC_H?_*' OR code GLOB 'LOC_Q?_*' OR code GLOB 'LOC_J?_*' OR code GLOB 'LOC_K?_*' OR code GLOB 'LOC_M?_*' OR code GLOB 'LOC_N?_*' OR code GLOB 'LOC_P?_*';
 
 -- Assign A, B, E, F shelves to Hot Picking Zone (ZON07)
 INSERT INTO location_zone (location_id, zone_id)
-SELECT id, (SELECT id FROM zone WHERE code = 'ZON07') FROM location
-WHERE code LIKE 'LOC_A_%' OR code LIKE 'LOC_B_%' OR code LIKE 'LOC_E_%' OR code LIKE 'LOC_F_%';
+SELECT id, (SELECT id FROM zone WHERE code = 'ZON06') FROM location
+WHERE code GLOB 'LOC_A?_*' OR code GLOB 'LOC_B?_*' OR code GLOB 'LOC_D?_*' OR code GLOB 'LOC_E?_*' OR code GLOB 'LOC_G?_*' OR code GLOB 'LOC_H?_*' OR code GLOB 'LOC_Q?_*';
 
 -- Assign C, D shelves to Overstock Zone (ZON06)
 INSERT INTO location_zone (location_id, zone_id)
-SELECT id, (SELECT id FROM zone WHERE code = 'ZON06') FROM location
-WHERE code LIKE 'LOC_C_%' OR code LIKE 'LOC_D_%';
+SELECT id, (SELECT id FROM zone WHERE code = 'ZON07') FROM location
+WHERE code GLOB 'LOC_J?_*' OR code GLOB 'LOC_K?_*' OR code GLOB 'LOC_M?_*' OR code GLOB 'LOC_N?_*' OR code GLOB 'LOC_P?_*';
 
 -- Assign production locations to ZON_PROD
 INSERT INTO location_zone (location_id, zone_id)
-SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE code IN ('LOC_PROD_1', 'LOC_PROD_2');
+SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE code IN ('LOC_PROD_1');
 
--- -- Row A–F (y=0): ZON02 for A/B/E/F, ZON06 for C/D
--- ((SELECT id FROM location WHERE code = 'LOC_A_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_B_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_C_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_D_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_E_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_F_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- -- Row A2–F2 (y=10): ZON06 for A/B/E/F, ZON02 for C/D
--- ((SELECT id FROM location WHERE code = 'LOC_A2_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A2_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A2_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A2_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_B2_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B2_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B2_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B2_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_C2_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C2_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C2_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C2_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_D2_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D2_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D2_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D2_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_E2_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E2_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E2_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E2_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_F2_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F2_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F2_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F2_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- -- Row H (y=20): ZON02 for A/B/E/F, ZON06 for C/D
--- ((SELECT id FROM location WHERE code = 'LOC_A3_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A3_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A3_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_A3_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_B3_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B3_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B3_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_B3_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_C3_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C3_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C3_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_C3_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_D3_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D3_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D3_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_D3_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_E3_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E3_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E3_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_E3_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_F3_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F3_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F3_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_F3_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- -- Row I (y=30): ZON06 for A/B/E/F, ZON02 for C/D
--- ((SELECT id FROM location WHERE code = 'LOC_A4_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A4_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A4_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_A4_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_B4_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B4_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B4_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_B4_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_C4_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C4_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C4_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_C4_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_D4_1'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D4_2'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D4_3'), (SELECT id FROM zone WHERE code = 'ZON02')),
--- ((SELECT id FROM location WHERE code = 'LOC_D4_4'), (SELECT id FROM zone WHERE code = 'ZON02')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_E4_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E4_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E4_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_E4_4'), (SELECT id FROM zone WHERE code = 'ZON06')),
-
--- ((SELECT id FROM location WHERE code = 'LOC_F4_1'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F4_2'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F4_3'), (SELECT id FROM zone WHERE code = 'ZON06')),
--- ((SELECT id FROM location WHERE code = 'LOC_F4_4'), (SELECT id FROM zone WHERE code = 'ZON06'));
 
 -- Partners (add more vendors)
 INSERT INTO partner (
@@ -2328,13 +2407,13 @@ INSERT INTO partner (
     'supplierB@example.com', '223456789', 'vendor'),
 ('Carrier C', 'Carrier Rd 10', 'Carrier City', 'CountryX', '2000',
     'Carrier Billing Rd 10', 'Carrier Billing City', 'CountryX', '2001',
-    'carrier@example.com', '987654321', 'employee'),
+    'carrier@example.com', '987654321', 'carrier'),
 ('Customer B', 'Customer Ave 5', 'Customer City', 'CountryX', '3000',
     'Customer Billing Ave 5', 'Customer Billing City', 'CountryX', '3001',
     'customer@example.com', '555555555', 'customer'),
 ('Owner A', 'Owner Rd 2', 'Owner City', 'CountryX', '1500',
     'Owner Billing Rd 2', 'Owner Billing City', 'CountryX', '1501',
-    'owner@example.com', '111222333', 'customer'),
+    'owner@example.com', '111222333', 'employee'),
 ('Employee E', 'Employee St 3', 'Employee City', 'CountryX', '4000',
     'Employee Billing St 3', 'Employee Billing City', 'CountryX', '4001',
     'e@example.com', '444555666', 'employee');
@@ -2405,65 +2484,21 @@ INSERT INTO price_list (name, currency_id, valid_from, valid_to) VALUES
 -- -- Price list items
 INSERT INTO price_list_item (price_list_id, item_id, price) VALUES
 ((SELECT id FROM price_list WHERE name='Default EUR'), 1, 12.50),
-((SELECT id FROM price_list WHERE name='Default EUR'), 2, 25.00);
-
-INSERT INTO price_list_item (price_list_id, item_id, price)
-VALUES (
-    (SELECT id FROM price_list WHERE name='Default EUR'),
-    (SELECT id FROM item WHERE sku='KIT-ALPHA'),
-    75.95 -- or whatever price you want for the kit
-);
-
--- -- Purchase order for each vendor
--- INSERT INTO purchase_order (
---     status, origin, code, partner_id, currency_id, tax_id, discount_id
--- ) VALUES (
---     'draft',
---     'Seeded PO A',
---     'PO0001',
---     (SELECT id FROM partner WHERE name='Supplier A'),
---     (SELECT id FROM currency WHERE code='EUR'),
---     (SELECT id FROM tax WHERE name='Standard VAT'),
---     (SELECT id FROM discount WHERE name='No Discount')
--- ), (
---     'draft',
---     'Seeded PO B',
---     'PO0002',
---     (SELECT id FROM partner WHERE name='Supplier B'),
---     (SELECT id FROM currency WHERE code='EUR'),
---     (SELECT id FROM tax WHERE name='Standard VAT'),
---     (SELECT id FROM discount WHERE name='No Discount')
--- );
-
+((SELECT id FROM price_list WHERE name='Default EUR'), 2, 25.00),
+((SELECT id FROM price_list WHERE name='Default EUR'), 3, 75.95);
 
 -- -- Seed lots for each item
 INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
 VALUES
-(1, 'LOT-A-001', NULL, NULL, 'accepted', 'Seeded lot for Item Small A'),
-(1, 'LOT-A-002', NULL, NULL, 'accepted', 'Second lot for Item Small A'),
-(2, 'LOT-B-001', NULL, NULL, 'accepted', 'Seeded lot for Item Big B');
+(1, 'LOT-A-001', NULL, NULL, 'accepted', 'Seeded lot for Item Small A');
 
--- -- -- Stock for each vendor's item, now lot-aware
--- INSERT INTO stock (item_id, location_id, lot_id, quantity, reserved_quantity)
--- VALUES
--- (1, (SELECT id FROM location WHERE code = 'LOC01.1'), (SELECT id FROM lot WHERE lot_number='LOT-A-001'), 500, 0),
--- (1, (SELECT id FROM location WHERE code = 'LOC01.2'), (SELECT id FROM lot WHERE lot_number='LOT-A-002'), 500, 0),
--- (2, (SELECT id FROM location WHERE code = 'LOC06.1'), (SELECT id FROM lot WHERE lot_number='LOT-B-001'), 1000, 0);
-
-
--- -- -- Stock levels (assuming items start in incoming location)
--- INSERT INTO stock (item_id, location_id, quantity) VALUES
--- (1, 12, 50),
--- (2, 11, 20);
 
 -- Stock for each vendor's item (assuming you have locations for each vendor)
 INSERT INTO stock (item_id, location_id, lot_id, quantity, reserved_quantity, target_quantity)
-SELECT i.id, l.id, NULL, 1000, 0, 100
+SELECT i.id, l.id, (SELECT id FROM lot WHERE item_id=i.id), 1000, 0, 100
 FROM item i
 JOIN partner p ON i.vendor_id = p.id AND p.partner_type = 'vendor'
 JOIN location l ON l.partner_id = p.id;
-
-
 
 
 -- Routes (set active=1 for all initial routes)
@@ -2484,9 +2519,7 @@ INSERT INTO rule (
 
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON02'), (SELECT id FROM zone WHERE code='ZON_PROD'), 0, 1),
 
-((SELECT id FROM route WHERE name = 'Default'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
-((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1),
-((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON06'), (SELECT id FROM zone WHERE code='ZON07'), 0, 1),
+((SELECT id FROM route WHERE name = 'Default'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON06'), (SELECT id FROM zone WHERE code='ZON07'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON07'), (SELECT id FROM zone WHERE code='ZON03'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON03'), (SELECT id FROM zone WHERE code='ZON04'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON04'), (SELECT id FROM zone WHERE code='ZON09'), 0, 1);
@@ -2498,76 +2531,12 @@ INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
 ((SELECT id FROM route WHERE name = 'Return Route'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON02'), 0, 1);
 
 -- RULES FOR MANUFACTURING OUTPUT (finished product leaves ZON_PROD to ZON02)
--- When a manufacturing_order is completed, finished goods move from ZON_PROD to ZON02 (Stock Zone)
 INSERT INTO rule (route_id, action, source_id, target_id, delay, active)
 VALUES
-((SELECT id FROM route WHERE name = 'Manufacturing Output'), 'push', (SELECT id FROM zone WHERE code = 'ZON_PROD'), (SELECT id FROM zone WHERE code = 'ZON02'), 0, 1),
+((SELECT id FROM route WHERE name = 'Manufacturing Output'), 'push', (SELECT id FROM zone WHERE code = 'ZON_PROD'), (SELECT id FROM zone WHERE code = 'ZON06'), 0, 1),
 
 -- RULES FOR MANUFACTURING SUPPLY (components flow to ZON_PROD)
--- Demand at ZON_PROD is satisfied from ZON02 (Stock Zone)
-((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull', (SELECT id FROM zone WHERE code = 'ZON02'), (SELECT id FROM zone WHERE code = 'ZON_PROD'), 0, 1),
--- If not available in ZON02, pull from ZON05 (Quality Control)
-((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull', (SELECT id FROM zone WHERE code = 'ZON05'), (SELECT id FROM zone WHERE code = 'ZON02'), 0, 1),
--- If not available in ZON05, pull from ZON01 (Input)
-((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code = 'ZON01'), (SELECT id FROM zone WHERE code = 'ZON05'), 0, 1),
--- Add a push rule for Manufacturing Supply: Vendor Area → Input Zone
-((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code = 'ZON08'), (SELECT id FROM zone WHERE code = 'ZON01'), 0, 1);
-
--- Sale order with currency, tax, and discount at creation
--- INSERT INTO sale_order (
---     code, partner_id, status, currency_id, tax_id, discount_id
--- ) VALUES (
---     'ORD0001',
---     (SELECT id FROM partner WHERE name = 'Customer B'),
---     'draft',
---     (SELECT id FROM currency WHERE code='EUR'),
---     (SELECT id FROM tax WHERE name='Standard VAT'),
---     (SELECT id FROM discount WHERE name='Spring Sale')
--- );
-
--- Order lines (provide price, currency_id, cost, and cost_currency_id)
--- INSERT INTO order_line (
---     quantity, item_id, lot_id, order_id, price, currency_id, cost, cost_currency_id
--- ) VALUES
--- (10, 1, NULL, 1, 12.50, (SELECT id FROM currency WHERE code='EUR'), 7.00, (SELECT id FROM currency WHERE code='EUR')),
--- (5, 2, NULL, 1, 25.00, (SELECT id FROM currency WHERE code='EUR'), 15.00, (SELECT id FROM currency WHERE code='EUR'));
-
-
--- Order lines referencing lots (simulate a customer requesting a specific lot)
--- INSERT INTO order_line (
---     quantity, item_id, lot_id, order_id, price, currency_id, cost, cost_currency_id
--- ) VALUES
--- (5, 1, (SELECT id FROM lot WHERE lot_number='LOT-A-001'), 1, 12.50, (SELECT id FROM currency WHERE code='EUR'), 7.00, (SELECT id FROM currency WHERE code='EUR')),
--- (5, 2, (SELECT id FROM lot WHERE lot_number='LOT-B-001'), 1, 25.00, (SELECT id FROM currency WHERE code='EUR'), 15.00, (SELECT id FROM currency WHERE code='EUR'));
-
-
--- Purchase order lines referencing lots
--- INSERT INTO purchase_order_line (
---     purchase_order_id, item_id, lot_id, quantity, route_id, price, currency_id, cost, cost_currency_id
--- ) VALUES
--- ((SELECT id FROM purchase_order WHERE origin='Seeded PO A'), 1, (SELECT id FROM lot WHERE lot_number='LOT-A-001'), 100, 1, 7.50, (SELECT id FROM currency WHERE code='EUR'), 7.00, (SELECT id FROM currency WHERE code='EUR')),
--- ((SELECT id FROM purchase_order WHERE origin='Seeded PO B'), 2, (SELECT id FROM lot WHERE lot_number='LOT-B-001'), 50, 1, 16.00, (SELECT id FROM currency WHERE code='EUR'), 15.00, (SELECT id FROM currency WHERE code='EUR'));
-
--- Return line referencing a lot
--- INSERT INTO return_order (code, origin_model, origin_id, partner_id, status)
--- VALUES (
---     'RET0001',
---     'sale_order',
---     1,
---     (SELECT id FROM partner WHERE name = 'Customer B'),
---     'confirmed'
--- );
-
--- INSERT INTO return_line (
---     return_order_id, item_id, lot_id, quantity, reason, refund_amount, refund_currency_id, refund_tax_id, refund_discount_id
--- ) VALUES (
---     (SELECT id FROM return_order WHERE origin_id = 1 AND origin_model = 'sale_order'),
---     1,
---     (SELECT id FROM lot WHERE lot_number='LOT-A-001'),
---     2,
---     'broken item',
---     12.50,
---     (SELECT currency_id FROM sale_order WHERE id = 1),
---     (SELECT tax_id FROM sale_order WHERE id = 1),
---     (SELECT discount_id FROM sale_order WHERE id = 1)
--- );
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code = 'ZON06'), (SELECT id FROM zone WHERE code = 'ZON_PROD'), 0, 1),
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1);
