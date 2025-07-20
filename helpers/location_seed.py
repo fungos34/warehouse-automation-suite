@@ -8,7 +8,8 @@ def generate_insert_sql(
     top_view: List[List[int]],
     origin_coord: Tuple[float, float, float],
     location_dimensions: Tuple[float, float, float],
-    corridor_dimensions: Tuple[float, float, float]
+    corridor_dimensions: Tuple[float, float, float],
+    postfix: str = ""
 ) -> str:
     
     A = np.array(front_view)
@@ -38,7 +39,7 @@ def generate_insert_sql(
                     (origin_coord[1] + (np.sum(C[0, :j, 0], axis=0) * location_dimensions[1]) + ((j - np.sum(C[0, :j, 0], axis=0)) * corridor_dimensions[1])),
                     (origin_coord[2] + (np.sum(C[0, 0, :k], axis=0) * location_dimensions[2]) + ((k - np.sum(C[0, 0, :k], axis=0)) * corridor_dimensions[2])),
                 )
-    print("Origin coordinates O: \n", O)
+    print("Origin coordinates O: \n", origin_coord)
     values = []
     for i in range(C.shape[0]):
         for j in range(C.shape[1]):
@@ -48,12 +49,23 @@ def generate_insert_sql(
                     letter = chr(ord('A') + C.shape[1] - 1 - j)
                     number = i + 1
                     level = f"L{k+1}"
-                    code = f"LOC_{letter}{number}_{level}"
+                    code = f"LOC_{letter}{number}_{level}{postfix}"
                     desc = f"Shelf {letter}{number} Level {level}"
                     values.append(
                         (code, x, y, z, location_dimensions[0], location_dimensions[1], location_dimensions[2], 1, None, desc)
                     )
-    return values
+    
+    space = O[-1, -1, -1]
+    space_list = list(space)
+    if C[-1, -1, -1] == 1:
+        for i in range(len(space_list)):
+            space_list[i] = space_list[i] + location_dimensions[i]   
+    else:
+        for i in range(len(space_list)):
+            space_list[i] = space_list[i] + corridor_dimensions[i]
+    space = tuple(space_list) 
+
+    return values, space
 
 def write_sql_file(values, filename="locations.sql"):
     if values:
@@ -100,11 +112,13 @@ if __name__ == "__main__":
         [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1],
         [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1],
     ]
-    values = generate_insert_sql(front_view, top_view, (0.5, 0.5, 0), (4, 1, 2.5), (5, 5, 5))
-    i=0
-    for value in values:
-        i+=1
-        print("x: ", value[1], "\ty: ", value[2], "\tz: ", value[3], "\tcode: ", value[0], "\t#", i)
-    write_sql_file(values, "locations.sql")
+    values1, space1 = generate_insert_sql(front_view, top_view, (0.5, 0.5, 0), (4, 1, 2.5), (5, 5, 5))
+    # i=0
+    # for value in values:
+    #     i+=1
+    #     print("x: ", value[1], "\ty: ", value[2], "\tz: ", value[3], "\tcode: ", value[0], "\t#", i)
+    # values2, space2 = generate_insert_sql(front_view, top_view, (space1[0] + 5, space1[1] + 5, 0), (4, 1, 2.5), (5, 5, 5), "_2")
+    # values = values1
+    write_sql_file(values1, "locations.sql")
     # db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "warehouse.db"))
     # update_database(values, db_path)

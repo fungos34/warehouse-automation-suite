@@ -770,7 +770,7 @@ END;
 -- Trigger: On unreserved stock quantity increase, resolve intervention if applicable
 CREATE TRIGGER trg_resolve_intervention_on_stock
 AFTER UPDATE OF quantity ON stock
-WHEN NEW.quantity - NEW.reserved_quantity > OLD.quantity - OLD.reserved_quantity
+WHEN NEW.quantity - NEW.reserved_quantity > 0
 BEGIN
     -- Find the highest priority unresolved intervention for this location and item
     UPDATE move
@@ -805,7 +805,9 @@ BEGIN
                 OR (m.lot_id IS NULL)
             )
             AND i.resolved = 0
-            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
+            AND (
+                (SELECT IFNULL(SUM(quantity), 0) FROM move_line WHERE move_id = m.id) = m.quantity
+            )
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -895,7 +897,7 @@ BEGIN
                 OR (m.lot_id IS NULL)
             )
             AND i.resolved = 0
-            -- AND m.quantity <= NEW.quantity - NEW.reserved_quantity
+            AND (SELECT IFNULL(SUM(quantity), 0) FROM move_line WHERE move_id = m.id) = m.quantity
         ORDER BY i.priority DESC, i.created_at ASC
         LIMIT 1
     );
@@ -986,9 +988,7 @@ BEGIN
         SELECT i.move_id
         FROM intervention i
         JOIN move m ON m.id = i.move_id
-        WHERE m.source_id IN (
-            SELECT location_id FROM location_zone WHERE zone_id = NEW.trigger_zone_id
-        )
+        WHERE m.source_id = NEW.trigger_zone_id
             AND m.item_id = NEW.trigger_item_id
             AND (m.lot_id = NEW.trigger_lot_id OR m.lot_id IS NULL)
             AND i.resolved = 0
@@ -1130,10 +1130,10 @@ BEGIN
     SELECT
         'purchase_order',
         NEW.id,
-        'supply',
+        'demand',
         pol.route_id,
         pol.item_id,
-        (SELECT id FROM zone WHERE code = 'ZON08'), -- Vendor Area
+        (SELECT id FROM zone WHERE code = 'ZON01'), -- Inbound Area
         pol.quantity,
         pol.lot_id,
         'inbound'
@@ -1570,12 +1570,12 @@ END;
 -- Trigger: Check and allocate stock on move status change
 CREATE TRIGGER trg_move_fulfillment_check
 AFTER UPDATE OF status ON move
-WHEN (NEW.status = 'assigned' OR NEW.status = 'confirmed') AND OLD.status != NEW.status
+WHEN (NEW.status = 'waiting' OR NEW.status = 'confirmed') AND OLD.status != NEW.status
 BEGIN
     -- Guard: Only proceed if move is not already fully fulfilled
     -- (Prevents duplicate move lines)
     -- If fulfilled, do nothing
-    -- (SELECT IFNULL(SUM(quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
+    -- (SELECT IFNULL(SUM(done_quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
 
     INSERT INTO debug_log (event, move_id, info)
     VALUES ('move_fulfillment_check', NEW.id, 'Move status changed to ' || NEW.status || ', attempting to allocate stock and create move lines');
@@ -1744,7 +1744,7 @@ BEGIN
     UPDATE move
     SET status = 'waiting'
     WHERE id = NEW.id
-      AND (SELECT IFNULL(SUM(quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
+      AND (SELECT IFNULL(SUM(done_quantity),0) FROM move_line WHERE move_id = NEW.id) < NEW.quantity
       AND EXISTS (
             SELECT 1 FROM trigger t
             JOIN rule_trigger rt ON rt.trigger_id = t.id
@@ -2513,7 +2513,7 @@ INSERT INTO route (name, description, active) VALUES
 INSERT INTO rule (
     route_id, action, source_id, target_id, delay, active
 ) VALUES
-((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
+((SELECT id FROM route WHERE name = 'Default'), 'pull', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Default'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1),
 
@@ -2537,6 +2537,6 @@ VALUES
 
 -- RULES FOR MANUFACTURING SUPPLY (components flow to ZON_PROD)
 ((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code = 'ZON06'), (SELECT id FROM zone WHERE code = 'ZON_PROD'), 0, 1),
-((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
+((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Manufacturing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1);
