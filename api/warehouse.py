@@ -445,9 +445,9 @@ def create_manufacturing_order(
             raise HTTPException(status_code=404, detail="User not found")
         partner_id = partner_row["partner_id"]
         cur = conn.execute("""
-            INSERT INTO manufacturing_order (code, partner_id, item_id, quantity, status, planned_start, planned_end, origin)
-            VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)
-        """, (code, partner_id, data.item_id, data.quantity, planned_start, planned_end, "Manual creation"))
+            INSERT INTO manufacturing_order (code, partner_id, item_id, quantity, status, planned_start, planned_end, origin, manufacturing_location_id)
+            VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, 11)
+        """, (code, partner_id, data.item_id, data.quantity, planned_start, planned_end, "Manual creation"))  # Assuming 11 is the default manufacturing location ID
         conn.commit()
         return {"manufacturing_order_id": cur.lastrowid, "code": code}
 
