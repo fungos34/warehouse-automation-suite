@@ -64,6 +64,10 @@ class PurchaseOrderCreate(BaseModel):
 class TransferOrderCreate(BaseModel):
     partner_id: int
 
+class QuotationCreate(BaseModel):
+    code: str = ""
+    partner_id: int
+
 class ReturnLineIn(BaseModel):
     item_id: int
     lot_id: Optional[int] = None

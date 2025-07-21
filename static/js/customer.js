@@ -82,14 +82,14 @@ document.getElementById('partner-form').onsubmit = async function(e) {
     const partnerData = await resp.json();
     if (!resp.ok) throw new Error(partnerData.detail || 'Failed to create customer');
     // 2. Create sale order
-    const orderResp = await fetch('/sale-orders/', {
+    const orderResp = await fetch('/quotations/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ partner_id: partnerData.id, code: '' })
     });
     const order = await orderResp.json();
-    if (!orderResp.ok) throw new Error(order.detail || 'Failed to create order');
-    const orderId = order.order_id;
+    if (!orderResp.ok) throw new Error(order.detail || 'Failed to create quotation');
+    const orderId = order.quotation_id;
 
     // 3. Add order lines
     const lines = Object.values(pendingCart).map(item => ({
@@ -100,12 +100,19 @@ document.getElementById('partner-form').onsubmit = async function(e) {
         cost: item.cost || 0,
         cost_currency_id: item.cost_currency_id || item.currency_id || 1
     }));
-    const lineResp = await fetch(`/sale-orders/${orderId}/lines`, {
+    const lineResp = await fetch(`/quotations/${orderId}/lines`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(lines)
     });
-    if (!lineResp.ok) throw new Error('Failed to add order lines');
+    if (!lineResp.ok) throw new Error('Failed to add quotation lines');
+
+    // Confirm the quotation
+    const confirmResp = await fetch(`/quotations/${orderId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    if (!confirmResp.ok) throw new Error('Failed to confirm quotation');
 
     // 5. Create Stripe Checkout session
     const checkoutResp = await fetch('/create-checkout-session', {

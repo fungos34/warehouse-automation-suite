@@ -1,6 +1,6 @@
 async function startReturnOrderByCode(originModel, code = null) {
     if (!code) {
-        code = prompt(`Enter ${originModel.replace('_', ' ')} code:`);
+        code = prompt(`Enter ${originModel.replace(/_/g, ' ')} code:`);
         if (!code) return;
     }
 

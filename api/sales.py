@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, Request
 import stripe
 from typing import List
 from database import get_conn
-from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest
+from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest, QuotationCreate
 from auth import get_current_username
 from reportlab.lib.pagesizes import A4, A7
 from reportlab.lib import colors
@@ -28,7 +28,65 @@ def get_sale_order_item_view(username: str = Depends(get_current_username)):
     with get_conn() as conn:
         result = conn.execute("SELECT * FROM sale_order_item_view")
         return [dict(row) for row in result]
+
+# --- QUOTATION ENDPOINTS ---
+
+@router.post("/quotations/", tags=["Sales"])
+def create_quotation(data: QuotationCreate):
+    with get_conn() as conn:
+        code = data.code.strip() or f"Q-{uuid.uuid4().hex[:8].upper()}"
+        cur = conn.execute(
+            "INSERT INTO quotation (code, partner_id, status) VALUES (?, ?, 'draft')",
+            (code, data.partner_id)
+        )
+        conn.commit()
+        return {"quotation_id": cur.lastrowid, "code": code}
     
+@router.post("/quotations/{quotation_id}/lines", tags=["Sales"])
+def add_quotation_lines(quotation_id: int, lines: List[OrderLineIn]):
+    with get_conn() as conn:
+        for line in lines:
+            conn.execute(
+                "INSERT INTO quotation_line (quantity, item_id, quotation_id, price, currency_id, cost, cost_currency_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (line.quantity, line.item_id, quotation_id, line.price, line.currency_id, line.cost, line.cost_currency_id)
+            )
+        conn.commit()
+    return {"message": "Lines added"}
+
+@router.get("/quotations/", tags=["Sales"])
+def get_quotations(username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        result = conn.execute("SELECT * FROM quotation ORDER BY id")
+        return [dict(row) for row in result]
+
+@router.get("/quotations/draft", tags=["Sales"])
+def get_draft_quotations(username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        result = conn.execute("SELECT * FROM quotation WHERE status = 'draft' ORDER BY id")
+        return [dict(row) for row in result]
+
+@router.post("/quotations/{quotation_id}/confirm", tags=["Sales"])
+def confirm_quotation(quotation_id: int):  # username: str = Depends(get_current_username)
+    with get_conn() as conn:
+        # Set quotation to confirmed
+        conn.execute("UPDATE quotation SET status = 'confirmed' WHERE id = ?", (quotation_id,))
+        # Create sale order from quotation
+        q = conn.execute("SELECT * FROM quotation WHERE id = ?", (quotation_id,)).fetchone()
+        cur = conn.execute(
+            "INSERT INTO sale_order (code, partner_id, status, quotation_id) VALUES (?, ?, 'draft', ?)",
+            (f"SO-{uuid.uuid4().hex[:8].upper()}", q["partner_id"], quotation_id)
+        )
+        sale_order_id = cur.lastrowid
+        # Copy lines
+        lines = conn.execute("SELECT * FROM quotation_line WHERE quotation_id = ?", (quotation_id,)).fetchall()
+        for line in lines:
+            conn.execute(
+                "INSERT INTO order_line (quantity, item_id, order_id, price, currency_id, cost, cost_currency_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (line["quantity"], line["item_id"], sale_order_id, line["price"], line["currency_id"], line["cost"], line["cost_currency_id"])
+            )
+        conn.commit()
+    return {"sale_order_id": sale_order_id}
+
 # --- SALE ORDER ENDPOINTS ---
 
 @router.post("/sale-orders/", tags=["Sales"])
@@ -130,20 +188,20 @@ def get_sale_order_lines(order_id: int):  #  username: str = Depends(get_current
 @router.post("/create-checkout-session", tags=["Payments"])
 def create_checkout_session(data: CreateSessionRequest):
     with get_conn() as conn:
-        order = conn.execute("SELECT * FROM sale_order WHERE code = ?", (data.order_number,)).fetchone()
+        order = conn.execute("SELECT * FROM quotation WHERE code = ?", (data.order_number,)).fetchone()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
         order_id = order["id"]
         lines = conn.execute(
-            "SELECT ol.quantity, i.name, i.sku, ol.price, c.code as currency_code "
-            "FROM order_line ol "
-            "JOIN item i ON ol.item_id = i.id "
-            "LEFT JOIN currency c ON ol.currency_id = c.id "
-            "WHERE ol.order_id = ?",
+            "SELECT ql.quantity, i.name, i.sku, ql.price, c.code as currency_code "
+            "FROM quotation_line ql "
+            "JOIN item i ON ql.item_id = i.id "
+            "LEFT JOIN currency c ON ql.currency_id = c.id "
+            "WHERE ql.quotation_id = ?",
             (order_id,)
         ).fetchall()
         if not lines:
-            raise HTTPException(status_code=400, detail="No order lines found")
+            raise HTTPException(status_code=400, detail="No quotation lines found")
 
         # Calculate subtotal
         subtotal = sum(float(line["price"] or 0) * float(line["quantity"] or 0) for line in lines)

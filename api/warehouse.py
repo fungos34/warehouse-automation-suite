@@ -446,7 +446,14 @@ def create_manufacturing_order(
         partner_id = partner_row["partner_id"]
         cur = conn.execute("""
             INSERT INTO manufacturing_order (code, partner_id, item_id, quantity, status, planned_start, planned_end, origin, manufacturing_location_id)
-            VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, 11)
+            VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, (
+                SELECT lz.location_id
+                FROM location_zone lz
+                JOIN zone z ON lz.zone_id = z.id
+                WHERE z.production_area = 'primary'
+                ORDER BY lz.location_id ASC
+                LIMIT 1
+            ))
         """, (code, partner_id, data.item_id, data.quantity, planned_start, planned_end, "Manual creation"))  # Assuming 11 is the default manufacturing location ID
         conn.commit()
         return {"manufacturing_order_id": cur.lastrowid, "code": code}
