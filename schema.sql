@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS item (
     purchase_price REAL,              -- Optional: last purchase price
     purchase_currency_id INTEGER,     -- Optional: currency for purchase price
     bom_id INTEGER,
-    is_manufactured BOOLEAN DEFAULT FALSE,
+    is_digital INTEGER DEFAULT 0 CHECK(is_digital IN (0,1)), -- whether this item is digital
+    is_sellable INTEGER DEFAULT 1 CHECK(is_sellable IN (0,1)), -- whether this item is sold
+    is_assemblable INTEGER DEFAULT 0 CHECK(is_assemblable IN (0,1)),
+    is_disassemblable INTEGER DEFAULT 0 CHECK(is_disassemblable IN (0,1)),
     FOREIGN KEY(route_id) REFERENCES route(id),
     FOREIGN KEY(vendor_id) REFERENCES partner(id),
     FOREIGN KEY(cost_currency_id) REFERENCES currency(id),
@@ -306,7 +309,12 @@ CREATE TABLE IF NOT EXISTS quotation (
     tax_id INTEGER,                   -- NEW: tax for this order
     discount_id INTEGER,              -- NEW: discount for this order
     price_list_id INTEGER,            -- NEW: price list for this order
-    split_order_allowed BOOLEAN DEFAULT 0,
+
+    split_parcel BOOLEAN DEFAULT 0,  -- whether partial deliveries are allowed (in-stock items can be delivered earlier)
+    pick_pack BOOLEAN DEFAULT 1,     -- whether the items should be picked and packed (or self collected)
+    ship BOOLEAN DEFAULT 1,          -- whether the items should be shipped (or self pick-up)
+    carrier_id INTEGER,              -- carrier for this order (if shipping is enabled)
+
     notes TEXT,
     priority INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(partner_id) REFERENCES partner(id),
@@ -376,6 +384,7 @@ CREATE TABLE IF NOT EXISTS order_line (
     cost REAL,                        -- NEW: cost for this line (manufacture/purchase)
     cost_currency_id INTEGER,         -- NEW: currency for cost
     returned_quantity REAL DEFAULT 0,
+    description TEXT,
     FOREIGN KEY(order_id) REFERENCES sale_order(id),
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(route_id) REFERENCES route(id),
@@ -460,6 +469,10 @@ CREATE TABLE IF NOT EXISTS return_order (
     origin_model TEXT NOT NULL,
     origin_id INTEGER NOT NULL,
     partner_id INTEGER NOT NULL,
+
+    ship BOOLEAN DEFAULT 1, -- whether the return should be shipped back
+    carrier_id INTEGER, -- carrier for this return (if shipping is enabled)
+    
     priority INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL CHECK (status IN ('draft','confirmed','done','cancelled')) DEFAULT 'draft',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -515,6 +528,37 @@ CREATE TABLE IF NOT EXISTS manufacturing_order (
         )
 );
 
+-- Unbuild Order
+CREATE TABLE IF NOT EXISTS unbuild_order (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,
+    partner_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,         -- The finished product to unbuild
+    lot_id INTEGER,                  -- Nullable for non-lot-tracked items
+    quantity REAL NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('draft','confirmed','done','cancelled')) DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    planned_start DATETIME,
+    planned_end DATETIME,
+    unbuild_location_id INTEGER,      -- Location where the unbuilding takes place
+    unbuild_zone_id INTEGER,
+    origin TEXT,
+    trigger_id INTEGER,               -- Link to the trigger that caused this UO
+    priority INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id),
+    FOREIGN KEY(trigger_id) REFERENCES trigger(id),
+    FOREIGN KEY(partner_id) REFERENCES partner(id),
+    FOREIGN KEY(unbuild_location_id) REFERENCES location(id),
+    FOREIGN KEY(unbuild_zone_id) REFERENCES zone(id),
+    CHECK (planned_start IS NULL OR planned_end IS NULL OR planned_start < planned_end),
+    CHECK (
+        (unbuild_zone_id IS NOT NULL AND unbuild_location_id IS NULL)
+        OR 
+        (unbuild_location_id IS NOT NULL AND unbuild_zone_id IS NULL)
+        )
+);
+
 
 -- Rules
 CREATE TABLE IF NOT EXISTS rule (
@@ -542,7 +586,7 @@ CREATE TABLE IF NOT EXISTS route (
 CREATE TABLE IF NOT EXISTS trigger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     
-    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order', 'manufacturing_order')) NOT NULL,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order', 'manufacturing_order', 'unbuild_order')) NOT NULL,
     origin_id INTEGER,
 
     trigger_type TEXT NOT NULL CHECK (trigger_type IN ('demand','supply')),
@@ -726,7 +770,7 @@ BEGIN
     SELECT
         bl.item_id,
         NEW.manufacturing_location_id,
-        NULL,
+        bl.lot_id,
         -1 * bl.quantity * NEW.quantity,
         'Consumed for MO ' || NEW.code
     FROM bom_line bl
@@ -754,6 +798,34 @@ BEGIN
         'Produced by MO ' || NEW.code,
         (SELECT id FROM route WHERE name = 'Manufacturing Output')
     );
+END;
+
+DROP TRIGGER IF EXISTS trg_unbuild_order_done_consume_and_produce;
+CREATE TRIGGER trg_unbuild_order_done_consume_and_produce
+AFTER UPDATE OF status ON unbuild_order
+WHEN NEW.status = 'done' AND OLD.status != 'done'
+BEGIN
+    -- 1. Consume the finished product (parcel) at the unbuild location
+    INSERT INTO stock_adjustment (item_id, location_id, lot_id, delta, reason)
+    VALUES (
+        NEW.item_id,
+        NEW.unbuild_location_id,
+        NEW.lot_id,
+        -1 * NEW.quantity,
+        'Unbuilt by UO ' || NEW.code
+    );
+
+    -- 2. For each BOM line, produce the component at the unbuild location
+    INSERT INTO stock_adjustment (item_id, location_id, lot_id, delta, reason)
+    SELECT
+        bl.item_id,
+        NEW.unbuild_location_id,
+        bl.lot_id,
+        bl.quantity * NEW.quantity,
+        'Unbuilt by UO ' || NEW.code
+    FROM bom_line bl
+    JOIN item i ON i.bom_id = bl.bom_id
+    WHERE i.id = NEW.item_id;
 END;
 
 
@@ -1168,12 +1240,191 @@ BEGIN
 END;
 
 
--- Trigger: On sale_order status change to 'confirmed', create demand triggers for each order line
-DROP TRIGGER IF EXISTS trg_sale_order_confirmed;
-CREATE TRIGGER trg_sale_order_confirmed
-AFTER UPDATE ON sale_order
+DROP TRIGGER IF EXISTS trg_sale_order_confirmed_create_parcel_items;
+CREATE TRIGGER trg_sale_order_confirmed_create_parcel_items
+AFTER UPDATE OF status ON sale_order
 WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
 BEGIN
+    -- Only proceed if ship=1 in the linked quotation
+    -- 1. Get the quotation values
+    INSERT INTO debug_log (event, info)
+    SELECT 'sale_order_confirmed_create_parcel_items', 'Evaluating SO ' || NEW.code || ' for parcel creation (ship=' || q.ship || ', split_parcel=' || q.split_parcel || ')'
+    FROM quotation q WHERE q.id = NEW.quotation_id;
+
+    -- 2. If ship=1, create parcel item(s)
+    -- (a) If split_parcel=1, split lines by stock availability
+    -- (b) Otherwise, create one parcel item for all non-digital lines
+
+    -- 2a. Create a parcel item for in-stock lines (if split_parcel=1)
+    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
+    SELECT
+        'Parcel ' || NEW.code || '-A',
+        'PKG-' || NEW.code || '-A',
+        'PKG-' || NEW.code || '-A',
+        'Auto-generated parcel for in-stock items from SO ' || NEW.code,
+        0, 1, 1, 0
+    FROM quotation q
+    WHERE q.id = NEW.quotation_id AND q.ship = 1 AND q.split_parcel = 1
+      AND EXISTS (
+        SELECT 1 FROM order_line ol
+        JOIN stock s ON s.item_id = ol.item_id
+        WHERE ol.order_id = NEW.id
+          AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+          AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
+      );
+
+    -- 2b. Create a parcel item for out-of-stock lines (if split_parcel=1)
+    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
+    SELECT
+        'Parcel ' || NEW.code || '-B',
+        'PKG-' || NEW.code || '-B',
+        'PKG-' || NEW.code || '-B',
+        'Auto-generated parcel for out-of-stock items from SO ' || NEW.code,
+        0, 1, 1, 0
+    FROM quotation q
+    WHERE q.id = NEW.quotation_id AND q.ship = 1 AND q.split_parcel = 1
+      AND EXISTS (
+        SELECT 1 FROM order_line ol
+        WHERE ol.order_id = NEW.id
+          AND (
+            ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+            OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
+          )
+      );
+
+    -- 2c. If split_parcel=0 or all/none in stock, create a single parcel item
+    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
+    SELECT
+        'Parcel ' || NEW.code,
+        'PKG-' || NEW.code,
+        'PKG-' || NEW.code,
+        'Auto-generated parcel for SO ' || NEW.code,
+        0, 1, 1, 0
+    FROM quotation q
+    WHERE q.id = NEW.quotation_id AND q.ship = 1
+      AND (
+        q.split_parcel = 0
+        OR NOT EXISTS (
+            SELECT 1 FROM order_line ol
+            WHERE ol.order_id = NEW.id
+              AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+              AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
+        )
+        OR NOT EXISTS (
+            SELECT 1 FROM order_line ol
+            WHERE ol.order_id = NEW.id
+              AND (
+                ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+                OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
+              )
+        )
+      );
+
+    -- 3. Create BOM(s) for the parcel item(s)
+    -- For in-stock parcel
+    INSERT INTO bom (instructions)
+    SELECT 'Auto-generated BOM for in-stock parcel ' || NEW.code
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-A');
+
+    -- For out-of-stock parcel
+    INSERT INTO bom (instructions)
+    SELECT 'Auto-generated BOM for out-of-stock parcel ' || NEW.code
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-B');
+
+    -- For single parcel
+    INSERT INTO bom (instructions)
+    SELECT 'Auto-generated BOM for parcel ' || NEW.code
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code);
+
+    -- 4. Link BOM(s) to parcel item(s)
+    UPDATE item
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for in-stock parcel ' || NEW.code)
+    WHERE sku = 'PKG-' || NEW.code || '-A';
+
+    UPDATE item
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for out-of-stock parcel ' || NEW.code)
+    WHERE sku = 'PKG-' || NEW.code || '-B';
+
+    UPDATE item
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for parcel ' || NEW.code)
+    WHERE sku = 'PKG-' || NEW.code;
+
+    -- 5. Add BOM lines for each parcel item
+    -- In-stock parcel
+    INSERT INTO bom_line (bom_id, item_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code || '-A'),
+        ol.item_id,
+        ol.quantity
+    FROM order_line ol
+    WHERE ol.order_id = NEW.id
+      AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+      AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
+      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-A');
+
+    -- Out-of-stock parcel
+    INSERT INTO bom_line (bom_id, item_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code || '-B'),
+        ol.item_id,
+        ol.quantity
+    FROM order_line ol
+    WHERE ol.order_id = NEW.id
+      AND (
+        ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
+        OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
+      )
+      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-B');
+
+    -- Single parcel
+    INSERT INTO bom_line (bom_id, item_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code),
+        ol.item_id,
+        ol.quantity
+    FROM order_line ol
+    WHERE ol.order_id = NEW.id
+      AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
+      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code);
+
+    -- 6. (Optional) Insert order lines for the parcel item(s) if you want to track them in the sale order
+    -- (You may want to remove the original order lines or keep them for reference)
+
+
+
+    -- 1. If ship=1, create and confirm unbuild_order(s) for each parcel item at customer location
+    -- INSERT INTO unbuild_order (
+    --     code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
+    -- )
+    -- SELECT
+    --     'UO_' || NEW.code || '_' || i.sku,
+    --     NEW.partner_id,
+    --     i.id,
+    --     1,
+    --     'draft',
+    --     (SELECT l.id FROM location l WHERE l.partner_id = NEW.partner_id LIMIT 1),
+    --     'Auto-created for SO ' || NEW.code,
+    --     NULL,
+    --     NEW.priority
+    -- FROM item i
+    -- JOIN quotation q ON q.id = NEW.quotation_id
+    -- WHERE q.ship = 1
+    --   AND (
+    --     -- Single parcel
+    --     i.sku = 'PKG-' || NEW.code
+    --     -- Split parcels
+    --     OR i.sku = 'PKG-' || NEW.code || '-A'
+    --     OR i.sku = 'PKG-' || NEW.code || '-B'
+    --   )
+    --   AND EXISTS (SELECT 1 FROM order_line ol WHERE ol.order_id = NEW.id AND ol.item_id = i.id);
+
+    -- -- 2. Immediately confirm all unbuild_orders just created for this sale order
+    -- UPDATE unbuild_order
+    -- SET status = 'confirmed'
+    -- WHERE origin = 'Auto-created for SO ' || NEW.code
+    --   AND status = 'draft';
+
+    -- 3. If ship=0, create demand triggers for each order line (as before)
     INSERT INTO trigger (
         origin_model,
         origin_id,
@@ -1207,7 +1458,51 @@ BEGIN
             0
         )
     FROM order_line ol
-    WHERE ol.order_id = NEW.id;
+    JOIN quotation q ON q.id = NEW.quotation_id
+    WHERE ol.order_id = NEW.id AND q.ship = 0;
+
+END;
+
+
+DROP TRIGGER IF EXISTS trg_create_unbuild_order_on_parcel_item;
+CREATE TRIGGER trg_create_unbuild_order_on_parcel_item
+AFTER INSERT ON item
+WHEN NEW.sku LIKE 'PKG-%'
+BEGIN
+    -- Find the sale order for this parcel (by code)
+    INSERT INTO unbuild_order (
+        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
+    )
+    SELECT
+        'UO_' || so.code || '_' || NEW.sku,
+        so.partner_id,
+        NEW.id,
+        1,
+        'draft',
+        (SELECT l.id FROM location l WHERE l.partner_id = so.partner_id LIMIT 1),
+        'Auto-created for SO ' || so.code,
+        NULL,
+        so.priority
+    FROM sale_order so
+    WHERE so.code = substr(NEW.sku, 5, length(NEW.sku)-4)
+      AND (SELECT ship FROM quotation WHERE id = so.quotation_id) = 1;
+
+    -- Immediately confirm the unbuild order
+    -- UPDATE unbuild_order
+    -- SET status = 'confirmed'
+    -- WHERE code = 'UO_' || (SELECT code FROM sale_order WHERE code = substr(NEW.sku, 5, length(NEW.sku)-4)) || '_' || NEW.sku
+    --   AND status = 'draft';
+END;
+
+
+-- DROP TRIGGER IF EXISTS trg_auto_confirm_unbuild_order;
+CREATE TRIGGER trg_auto_confirm_unbuild_order
+AFTER INSERT ON unbuild_order
+WHEN NEW.status = 'draft'
+BEGIN
+    UPDATE unbuild_order
+    SET status = 'confirmed'
+    WHERE id = NEW.id AND status = 'draft';
 END;
 
 
@@ -1277,6 +1572,7 @@ BEGIN
                 WHERE lz.location_id = NEW.manufacturing_location_id
                 AND z.production_area = 'primary'
             )
+            LIMIT 1
             ),
             (SELECT id FROM route WHERE name = 'Packing Supply'
             AND EXISTS (
@@ -1286,8 +1582,9 @@ BEGIN
                 WHERE lz.location_id = NEW.manufacturing_location_id
                 AND z.production_area = 'yes'
             )
+            LIMIT 1
             ),
-            (SELECT id FROM route WHERE name = 'Default')
+            (SELECT id FROM route WHERE name = 'Default' LIMIT 1)
         ),
         bl.item_id,
         NEW.manufacturing_location_id,
@@ -1305,43 +1602,108 @@ BEGIN
       AND i.bom_id IS NOT NULL;
 END;
 
-DROP TRIGGER IF EXISTS trg_quotation_confirmed_create_package_item;
-CREATE TRIGGER trg_quotation_confirmed_create_package_item
+
+DROP TRIGGER IF EXISTS trg_unbuild_order_confirm_create_demand_triggers;
+CREATE TRIGGER trg_unbuild_order_confirm_create_demand_triggers
+AFTER UPDATE OF status ON unbuild_order
+WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
+BEGIN
+    -- Log for debugging
+    INSERT INTO debug_log (event, info)
+    VALUES (
+        'trg_unbuild_order_confirm_create_demand_triggers',
+        'Fired for UO ' || NEW.code ||
+        ', status=' || NEW.status ||
+        ', item_id=' || NEW.item_id ||
+        ', unbuild_location_id=' || NEW.unbuild_location_id ||
+        ', trigger_route_id=' || COALESCE(
+            (SELECT id FROM route WHERE name = 'Unbuilding Supply'
+                AND EXISTS (
+                    SELECT 1
+                    FROM location_zone lz
+                    JOIN zone z ON lz.zone_id = z.id
+                    WHERE lz.location_id = NEW.unbuild_location_id
+                    AND z.production_area = 'primary'
+                )
+                LIMIT 1
+            ),
+            (SELECT id FROM route WHERE name = 'Unpacking Supply'
+                AND EXISTS (
+                    SELECT 1
+                    FROM location_zone lz
+                    JOIN zone z ON lz.zone_id = z.id
+                    WHERE lz.location_id = NEW.unbuild_location_id
+                    AND z.production_area = 'yes'
+                )
+                LIMIT 1
+            ),
+            (SELECT id FROM route WHERE name = 'Default' LIMIT 1)
+        )
+    );
+
+    -- Only create a demand trigger for the unbuild_order.item_id
+    INSERT INTO trigger (
+        origin_model,
+        origin_id,
+        trigger_type,
+        trigger_route_id,
+        trigger_item_id,
+        trigger_location_id,
+        trigger_item_quantity,
+        trigger_lot_id,
+        type,
+        status,
+        priority
+    )
+    VALUES (
+        'unbuild_order',
+        NEW.id,
+        'demand',
+        COALESCE(
+            (SELECT id FROM route WHERE name = 'Unbuilding Supply'
+                AND EXISTS (
+                    SELECT 1
+                    FROM location_zone lz
+                    JOIN zone z ON lz.zone_id = z.id
+                    WHERE lz.location_id = NEW.unbuild_location_id
+                    AND z.production_area = 'primary'
+                )
+                LIMIT 1
+            ),
+            (SELECT id FROM route WHERE name = 'Unpacking Supply'
+                AND EXISTS (
+                    SELECT 1
+                    FROM location_zone lz
+                    JOIN zone z ON lz.zone_id = z.id
+                    WHERE lz.location_id = NEW.unbuild_location_id
+                    AND z.production_area = 'yes'
+                )
+                LIMIT 1
+            ),
+            (SELECT id FROM route WHERE name = 'Default' LIMIT 1)
+        ),
+        NEW.item_id,
+        NEW.unbuild_location_id,
+        NEW.quantity,
+        NEW.lot_id,
+        CASE
+            WHEN (SELECT COUNT(*) FROM location_zone lz JOIN zone z ON lz.zone_id = z.id WHERE lz.location_id = NEW.unbuild_location_id AND z.code = 'ZON09') > 0 THEN 'outbound'
+            WHEN (SELECT COUNT(*) FROM location_zone lz JOIN zone z ON lz.zone_id = z.id WHERE lz.location_id = NEW.unbuild_location_id AND z.code = 'ZON08') > 0 THEN 'inbound'
+            WHEN (SELECT COUNT(*) FROM location_zone lz JOIN zone z ON lz.zone_id = z.id WHERE lz.location_id = NEW.unbuild_location_id AND (z.warehouse_area = 'yes' OR z.warehouse_area = 'primary')) > 0 THEN 'internal'
+            ELSE 'internal'
+        END,
+        'draft',
+        NEW.priority
+    );
+END;
+
+
+DROP TRIGGER IF EXISTS trg_quotation_confirmed_create_sale_order_and_lines;
+CREATE TRIGGER trg_quotation_confirmed_create_sale_order_and_lines
 AFTER UPDATE OF status ON quotation
 WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
 BEGIN
-    -- 1. Create package item
-    INSERT INTO item (name, sku, barcode, description, is_manufactured)
-    VALUES (
-        'Parcel ' || NEW.code,
-        'PKG-' || NEW.code,
-        'PKG-' || NEW.code,
-        'Custom package generated from quotation ' || NEW.code,
-        1
-    );
-
-    -- 2. Create BOM
-    INSERT INTO bom (instructions)
-    VALUES ('Auto-generated BOM for quotation ' || NEW.code);
-
-    -- 3. Link BOM to item
-    UPDATE item
-    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for quotation ' || NEW.code)
-    WHERE sku = 'PKG-' || NEW.code;
-
-    -- 4. Create BOM lines for each quotation line (including custom items)
-    INSERT INTO bom_line (bom_id, item_id, quantity)
-    SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code),
-        COALESCE(
-            ql.item_id,
-            (SELECT id FROM item WHERE name = ql.description AND is_manufactured = 0 LIMIT 1)
-        ),
-        ql.quantity
-    FROM quotation_line ql
-    WHERE ql.quotation_id = NEW.id;
-
-    -- 5. Insert sale order for the package item
+    -- 1. Create sale order
     INSERT INTO sale_order (
         code,
         partner_id,
@@ -1366,34 +1728,53 @@ BEGIN
         NEW.priority
     );
 
-    -- 6. Insert order line for the package item (the parcel)
+    -- 2. Copy all quotation lines to order lines
     INSERT INTO order_line (
         quantity,
         item_id,
+        lot_id,
         order_id,
+        route_id,
         price,
         currency_id,
         price_list_id,
         cost,
-        cost_currency_id
+        cost_currency_id,
+        description
     )
     SELECT
-        1,
-        (SELECT id FROM item WHERE sku = 'PKG-' || NEW.code),
+        ql.quantity,
+        ql.item_id,
+        ql.lot_id,
         (SELECT id FROM sale_order WHERE code = 'SO-' || NEW.code),
-        0, -- You may want to calculate a price here
-        NEW.currency_id,
-        NEW.price_list_id,
-        0, -- You may want to calculate a cost here
-        NEW.currency_id
-    ;
+        ql.route_id,
+        ql.price,
+        ql.currency_id,
+        ql.price_list_id,
+        ql.cost,
+        ql.cost_currency_id,
+        ql.description
+    FROM quotation_line ql
+    WHERE ql.quotation_id = NEW.id;
 END;
+
 
 -- Trigger: On trigger creation, evaluate and link applicable rules or set to intervene
 DROP TRIGGER IF EXISTS trg_trigger_evaluate_rules;
 CREATE TRIGGER trg_trigger_evaluate_rules
 AFTER INSERT ON trigger
 BEGIN
+    -- Log for debugging: show all relevant context for this unbuild_order confirmation
+    INSERT INTO debug_log (event, info)
+    VALUES (
+        'trg_trigger_evaluate_rules',
+        ', status=' || COALESCE(NEW.status, 'NULL') ||
+        ', trigger_item_id=' || COALESCE(NEW.trigger_item_id, 'NULL') ||
+        ', trigger_lot_id=' || COALESCE(NEW.trigger_lot_id, 'NULL') ||
+        ', trigger_item_quantity=' || NEW.trigger_item_quantity ||
+        ', trigger_location_id=' || COALESCE(NEW.trigger_location_id, 'NULL')
+    );
+
     -- 1. If trigger_zone_id is set, use as before
     INSERT INTO rule_trigger (rule_id, trigger_id)
     SELECT r.id, NEW.id
@@ -1636,7 +2017,7 @@ BEGIN
     FROM "trigger" t
     JOIN item i ON i.id = t.trigger_item_id
     WHERE t.id = NEW.trigger_id
-      AND i.is_manufactured = 1
+      AND i.is_assemblable = 1
       AND NOT EXISTS (
           SELECT 1 FROM manufacturing_order mo
           WHERE mo.status = 'draft'
@@ -1658,7 +2039,7 @@ BEGIN
         WHERE po.status = 'draft'
         AND po.partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
     )
-    AND (SELECT is_manufactured FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0;
+    AND (SELECT is_assemblable FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0;
 
     UPDATE purchase_order_line
     SET quantity = quantity + (SELECT trigger_item_quantity FROM "trigger" WHERE id = NEW.trigger_id)
@@ -1671,7 +2052,7 @@ BEGIN
       AND item_id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)
       AND IFNULL(lot_id, -1) = IFNULL((SELECT trigger_lot_id FROM "trigger" WHERE id = NEW.trigger_id), -1)
       AND route_id = (SELECT trigger_route_id FROM "trigger" WHERE id = NEW.trigger_id)
-      AND (SELECT is_manufactured FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0;
+      AND (SELECT is_assemblable FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0;
 
     INSERT INTO purchase_order_line (
         purchase_order_id, item_id, lot_id, quantity, route_id, price, currency_id, cost, cost_currency_id
@@ -1704,7 +2085,7 @@ BEGIN
           AND IFNULL(pol.lot_id, -1) = IFNULL(t.trigger_lot_id, -1)
           AND pol.route_id = t.trigger_route_id
       )
-      AND i.is_manufactured = 0;
+      AND i.is_assemblable = 0;
 END;
 
 
@@ -2392,8 +2773,8 @@ INSERT INTO zone (code, description, route_id, production_area, customer_area, i
 ('ZON07', 'Hot Picking Zone', 1, 'no', 'no', 'no', 'no', 'no', 'no', 'no', 'yes'),
 ('ZON03', 'Packing Zone', 1, 'yes', 'no', 'no', 'no', 'no', 'no', 'no', 'yes'),
 ('ZON04', 'Outgoing Zone', 1, 'no', 'no', 'no', 'primary', 'no', 'no', 'no', 'yes'),
-('ZON08', 'Vendor Area', 1, 'no', 'no', 'no', 'no', 'primary', 'no', 'no', 'no'),
-('ZON09', 'Customer Area', 1, 'no', 'primary', 'no', 'no', 'no', 'no', 'no', 'no'),
+('ZON08', 'Vendor Area', 1, 'yes', 'no', 'no', 'no', 'primary', 'no', 'no', 'no'),
+('ZON09', 'Customer Area', 1, 'yes', 'primary', 'no', 'no', 'no', 'no', 'no', 'no'),
 ('ZON10', 'Employee Area', 1, 'no', 'no', 'no', 'no', 'no', 'no', 'primary', 'no'),
 ('ZON_PROD', 'Production/Manufacturing Zone', 1, 'primary', 'no', 'no', 'no', 'no', 'no', 'no', 'yes'),
 ('ZON11', 'Carrier Area', 1, 'no', 'no', 'no', 'no', 'no', 'primary', 'no', 'no');
@@ -2780,10 +3161,10 @@ INSERT INTO item (
 -- Seed a new item that is a kit/product with a BOM
 INSERT INTO item (
     name, sku, barcode, size, description, route_id, vendor_id,
-    cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id, is_manufactured
+    cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id, is_assemblable, is_disassemblable
 ) VALUES (
     'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big', 'Kit consisting of Small A and Big B', NULL, NULL,
-    20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1
+    20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1
 );
 
 -- Create a BOM for Kit Alpha
@@ -2844,7 +3225,9 @@ INSERT INTO route (name, description, active) VALUES
 ('Return Route', 'Route for customer returns with quality check', 1),
 ('Manufacturing Output', 'Route for finished goods from production to stock', 1),
 ('Manufacturing Supply', 'Route for supplying components to production', 1),
-('Packing Supply', 'Route for supplying parcel components to packing area', 1);
+('Packing Supply', 'Route for supplying parcel components to packing area', 1),
+('Unpacking Supply', 'Route for unpacking parcels (triggers packing)', 1),
+('Unbuilding Supply', 'Route for supplying production zone to unbuild items', 1);
 
 
 -- Rules (set active=1 for all initial rules)
@@ -2885,3 +3268,20 @@ VALUES
 ((SELECT id FROM route WHERE name = 'Packing Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Packing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
 ((SELECT id FROM route WHERE name = 'Packing Supply'), 'push', (SELECT id FROM zone WHERE code='ZON05'), (SELECT id FROM zone WHERE code='ZON06'), 0, 1);
+
+-- RULES FOR PACKING/UNPACKING TRIGGERD BY UNBUILD ORDER
+INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
+-- Customer parcel unpacking (outgoing from ZON03 > unpacking in ZON09)
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON03'), (SELECT id FROM zone WHERE code='ZON04'), 0, 1),
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON04'), (SELECT id FROM zone WHERE code='ZON09'), 0, 1),
+-- Vendor return unpacking (outgoing from ZON03 > unpacking in ZON08)
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON04'), (SELECT id FROM zone WHERE code='ZON08'), 0, 1),
+-- Sales return parcel unpacking (incoming from ZON09 > unpacking in ZON05)
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON01'), (SELECT id FROM zone WHERE code='ZON05'), 0, 1),
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON09'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1),
+-- Vendor supply unpacking (incoming from ZON08 > unpacking in ZON05)
+((SELECT id FROM route WHERE name = 'Unpacking Supply'), 'pull_or_buy', (SELECT id FROM zone WHERE code='ZON08'), (SELECT id FROM zone WHERE code='ZON01'), 0, 1);
+
+-- RULES FOR UNBUILDING TRIGGERD BY UNBUILD ORDER
+INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
+((SELECT id FROM route WHERE name = 'Unbuilding Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON02'), (SELECT id FROM zone WHERE code='ZON_PROD'), 0, 1);

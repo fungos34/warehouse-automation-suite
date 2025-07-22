@@ -1,5 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
 import stripe
+import shippo
+import random
+from shippo.models import components
 from typing import List
 from database import get_conn
 from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest, QuotationCreate
@@ -15,9 +18,11 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 from utils import add_page_number_and_qr
-from run import base_url, endpoint_secret, stripe_api_key
+from run import base_url, endpoint_secret, stripe_api_key, shippo_api_key
+import asyncio
 
 stripe.api_key = stripe_api_key
+shippo_sdk = shippo.Shippo(api_key_header=shippo_api_key)
 
 router = APIRouter()
 
@@ -265,6 +270,111 @@ async def stripe_webhook(request: Request):
 
     return {"status": "ok"}
 
+
+@router.post("/shippo/create-address", tags=["Shipping"])
+async def create_shippo_address():
+    address_from, address_to = await asyncio.gather(
+        create_shippo_address_async(
+            #             {
+            # "name": "Anna Schneider",
+            # "street1": "Hauptstraße 45",
+            # "city": "Berlin",
+            # "state": "BE",
+            # "zip": "10115",
+            # "country": "DE",
+            # "email": "anna.schneider@example.de",
+            # "phone": "+49 30 1234567"
+            # }
+            {
+                "name": "Shawn Ippotle",
+                "street1": "215 Clayton St.",
+                "city": "San Francisco",
+                "state": "CA",
+                "zip": "94117",
+                "country": "US",
+                "email": "shippotle@shippo.com",
+                "phone": "+1 555 341 9393"
+            }
+        ),
+        create_shippo_address_async(
+            # {
+            # "name": "Markus Weber",
+            # "street1": "Sonnenweg 12",
+            # "city": "München",
+            # "state": "BY",
+            # "zip": "80331",
+            # "country": "DE",
+            # "email": "markus.weber@example.de",
+            # "phone": "+49 89 9876543"
+            # }
+        {
+                "name": "Mr Hippo Pippo",
+                "street1": "1 Broadway",
+                "city": "New York",
+                "state": "NY",
+                "zip": "10004",
+                "country": "US",
+                "email": "hippopippo@example.com",
+                "phone": "+1 555 351 9097"
+            }
+        ),
+    )
+    parcel = components.ParcelCreateRequest(
+        length="5",
+        width="5",
+        height="5",
+        distance_unit=components.DistanceUnitEnum.CM,
+        weight="2",
+        mass_unit=components.WeightUnitEnum.KG
+    )
+
+    shipment = shippo_sdk.shipments.create(
+        components.ShipmentCreateRequest(
+            address_from=address_from,
+            address_to=address_to,
+            parcels=[parcel],
+            async_=False
+        )
+    )
+    # Get the first rate in the rates results.
+    # Customize this based on your business logic.
+    rate = None
+    for meta in shipment.rates:
+        if meta.provider.upper() == "USPS":
+            rate = meta
+
+    if not rate:
+        rate = shipment.rates[random.randint(0, len(shipment.rates) - 1)]
+
+    # Purchase the desired rate. 
+    transaction = shippo_sdk.transactions.create(
+        components.TransactionCreateRequest(
+            rate=rate.object_id,
+            label_file_type=components.LabelFileTypeEnum.PDF,
+            async_=False
+        )
+    )
+
+    # Retrieve label url and tracking number or error message
+    if transaction.status == "SUCCESS":
+        print(transaction.label_url)
+        print(transaction.tracking_number)
+    else:
+        print(transaction.messages)
+
+    return {"transaction": transaction}
+
+async def create_shippo_address_async(address):
+    return components.AddressCreateRequest(
+        name=address["name"],
+        street1=address["street1"],
+        city=address["city"],
+        state=address["state"],
+        zip=address["zip"],
+        country=address["country"],
+        email=address["email"],
+        phone=address["phone"]
+    )
 
 @router.get("/sale-orders/{order_id}/print-order", tags=["Documents"])
 def sale_order_pdf(order_id: int):

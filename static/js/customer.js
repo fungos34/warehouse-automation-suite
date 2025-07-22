@@ -150,6 +150,33 @@ document.getElementById('partner-cancel-btn').onclick = function() {
     pendingCart = {};
 };
 
+
+// Example: Call Shippo address creation endpoint and show result
+document.getElementById('create-shippo-address-btn').onclick = async function() {
+    try {
+        const resp = await fetch('/shippo/create-address', {
+            method: 'POST',
+            // headers: { Authorization: 'Bearer ' + jwtToken }
+        });
+        const data = await resp.json();
+        const downloadBtn = document.getElementById('download-label-btn');
+        if (resp.ok && data.transaction.status !== 'ERROR') {
+            downloadBtn.innerHTML = "Download Label";
+            downloadBtn.href = data.transaction.label_url;
+            downloadBtn.target = "_blank";
+            downloadBtn.style.display = "inline";
+        } else {
+            downloadBtn.innerHTML = "";
+            downloadBtn.removeAttribute("href");
+            downloadBtn.style.display = "none";
+            alert('Error creating Shippo address: ' + (JSON.stringify(data)));
+        }
+    } catch (e) {
+        alert('Error creating Shippo address');
+    }
+};
+
+
 window.addToCart = function(id, name, price, currency, currency_id, cost, cost_currency_id) {
     if (!cart[id]) cart[id] = { id, name, price, currency, currency_id, cost, cost_currency_id, qty: 0 };
     cart[id].qty += 1;
