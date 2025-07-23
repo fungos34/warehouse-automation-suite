@@ -10,6 +10,8 @@ async function startReturnOrderByCode(originModel, code = null) {
     } else if (originModel === 'purchase_order') {
         // Adjust if you have a similar endpoint for purchase orders
         order = await fetch(`/purchase-orders/by-code/${code}`).then(r => r.json());
+    } else if (originModel === 'quotation') {
+        order = await fetch(`/quotations/${code}`).then(r => r.json());
     } else {
         alert('Unsupported origin model');
         return;
@@ -192,7 +194,7 @@ document.addEventListener("DOMContentLoaded", async function() {
     const detailsDiv = document.getElementById('order-details');
     let orderId = null;
     try {
-        const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
+        const resp = await fetch(`/sale-orders/by-quotation/${orderNumber}`);
         if (!resp.ok) throw new Error('Order not found');
         const order = await resp.json();
         orderId = order.id;
