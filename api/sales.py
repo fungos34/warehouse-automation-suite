@@ -127,12 +127,18 @@ def get_sale_order_by_code(order_number: str):
         }
     
 
-@router.get("/sale-orders/by-quotation/{quotation_number}", tags=["Sales"])
-def get_sale_order_by_quotation(quotation_number: str):
+@router.get("/sale-orders/by-quotation/{quotation_code}", tags=["Sales"])
+def get_sale_order_by_quotation(quotation_code: str):
     with get_conn() as conn:
+        quotation = conn.execute(
+            "SELECT id FROM quotation WHERE code = ?",
+            (quotation_code,)
+        ).fetchone()
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
         order = conn.execute(
             "SELECT so.*, p.name as partner_name FROM sale_order so LEFT JOIN partner p ON so.partner_id = p.id WHERE so.quotation_id = ?",
-            (quotation_number,)
+            (quotation["id"],)
         ).fetchone()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")

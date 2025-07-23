@@ -855,11 +855,105 @@ BEGIN
 END;
 
 
--- Update returned_quantity on order_line when a return_order is confirmed
-DROP TRIGGER IF EXISTS trg_confirm_return_order_update_returned_quantity;
-CREATE TRIGGER trg_confirm_return_order_update_returned_quantity
+DROP TRIGGER IF EXISTS trg_return_order_confirmed_create_unbuild_or_trigger;
+CREATE TRIGGER trg_return_order_confirmed_create_unbuild_or_trigger
 AFTER UPDATE OF status ON return_order
-WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed' AND NEW.origin_model = 'sale_order'
+WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
+BEGIN
+    -- If ship=1, create a parcel item (return parcel), BOM, BOM lines, and unbuild order at input zone
+    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
+    SELECT
+        'Return Parcel ' || NEW.code,
+        'RET-PKG-' || NEW.code,
+        'RET-PKG-' || NEW.code,
+        'Auto-generated return parcel for RO ' || NEW.code,
+        0, 1, 1, 0
+    WHERE NEW.ship = 1;
+
+    -- Create BOM for the parcel item
+    INSERT INTO bom (instructions)
+    SELECT 'Auto-generated BOM for return parcel ' || NEW.code
+    WHERE NEW.ship = 1;
+
+    -- Link BOM to parcel item
+    UPDATE item
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for return parcel ' || NEW.code)
+    WHERE sku = 'RET-PKG-' || NEW.code;
+
+    -- Add BOM lines for each valid return line (exclude digital and non-sellable items)
+    INSERT INTO bom_line (bom_id, item_id, lot_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'RET-PKG-' || NEW.code),
+        rl.item_id,
+        rl.lot_id,
+        rl.quantity
+    FROM return_line rl
+    JOIN item i ON i.id = rl.item_id
+    WHERE rl.return_order_id = NEW.id
+      AND i.is_digital = 0
+      AND i.is_sellable = 1
+      AND NEW.ship = 1;
+
+    -- Create unbuild order at input zone and confirm it
+    INSERT INTO unbuild_order (
+        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
+    )
+    SELECT
+        'UO_RET_' || NEW.code,
+        NEW.partner_id,
+        (SELECT id FROM item WHERE sku = 'RET-PKG-' || NEW.code),
+        1,
+        'draft',
+        (SELECT l.id FROM location l JOIN location_zone lz ON l.id = lz.location_id JOIN zone z ON lz.zone_id = z.id WHERE z.code = 'ZON01' LIMIT 1),
+        'Auto-created for RO ' || NEW.code,
+        NULL,
+        NEW.priority
+    WHERE NEW.ship = 1;
+
+    -- Immediately confirm the unbuild order
+    UPDATE unbuild_order
+    SET status = 'confirmed'
+    WHERE code = 'UO_RET_' || NEW.code
+      AND status = 'draft'
+      AND origin = 'Auto-created for RO ' || NEW.code;
+
+    -- If ship=0, only create a demand trigger at the input zone for each return line
+    INSERT INTO trigger (
+        origin_model,
+        origin_id,
+        trigger_type,
+        trigger_route_id,
+        trigger_item_id,
+        trigger_zone_id,
+        trigger_item_quantity,
+        trigger_lot_id,
+        type,
+        status,
+        priority
+    )
+    SELECT
+        'return_order',
+        NEW.id,
+        'demand',
+        (SELECT id FROM route WHERE name = 'Return Route'),
+        rl.item_id,
+        (SELECT id FROM zone WHERE code = 'ZON01'), -- Input Zone
+        rl.quantity,
+        rl.lot_id,
+        'inbound',
+        'draft',
+        NEW.priority
+    FROM return_line rl
+    WHERE rl.return_order_id = NEW.id
+      AND NEW.ship = 0;
+END;
+
+
+-- Update returned_quantity on order_line when a return_order is confirmed
+DROP TRIGGER IF EXISTS trg_return_order_done_update_returned_quantity;
+CREATE TRIGGER trg_return_order_done_update_returned_quantity
+AFTER UPDATE OF status ON return_order
+WHEN NEW.status = 'done' AND OLD.status != 'done' AND NEW.origin_model = 'sale_order'
 BEGIN
     UPDATE order_line
     SET returned_quantity = returned_quantity + (
@@ -879,10 +973,10 @@ BEGIN
 END;
 
 -- Update returned_quantity on purchase_order_line when a return_order is confirmed
-DROP TRIGGER IF EXISTS trg_confirm_return_po_update_returned_quantity;
-CREATE TRIGGER trg_confirm_return_po_update_returned_quantity
+DROP TRIGGER IF EXISTS trg_return_order_done_update_returned_quantity;
+CREATE TRIGGER trg_return_order_done_update_returned_quantity
 AFTER UPDATE OF status ON return_order
-WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed' AND NEW.origin_model = 'purchase_order'
+WHEN NEW.status = 'done' AND OLD.status != 'done' AND NEW.origin_model = 'purchase_order'
 BEGIN
     UPDATE purchase_order_line
     SET returned_quantity = returned_quantity + (
@@ -2809,14 +2903,14 @@ INSERT INTO zone (code, description, route_id, production_area, customer_area, i
 -- Locations
 INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, description, priority) VALUES
 -- Input A/B (left side, away from shelves)
-('LOC01.1', -10, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input A', 0),
-('LOC01.2', -10, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input B', 0),
-('LOC01.3', -5, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
+('LOC01.1', -10.0, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input A', 0),
+('LOC01.2', -10.0, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input B', 0),
+('LOC01.3', -10.0, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
 
 -- Quality Check A/B (far left, higher y)
-('LOC05.1', -10, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check A', 0),
-('LOC05.2', -10, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check B', 0),
-('LOC05.3', -5, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
+('LOC05.1', -10.0, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check A', 0),
+('LOC05.2', -10.0, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check B', 0),
+('LOC05.3', -10.0, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
 
 -- Output (far right, higher y)
 ('LOC04.1', 40, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output A', 0),

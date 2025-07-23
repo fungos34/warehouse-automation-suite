@@ -190,11 +190,12 @@ window.downloadReturnBill = async function(id, code) {
 };
 
 document.addEventListener("DOMContentLoaded", async function() {
-    const orderNumber = document.getElementById('order-number').textContent;
+    const element = document.getElementById('order-number');
+    const orderNumber = element ? element.textContent : null;
     const detailsDiv = document.getElementById('order-details');
     let orderId = null;
     try {
-        const resp = await fetch(`/sale-orders/by-quotation/${orderNumber}`);
+        const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
         if (!resp.ok) throw new Error('Order not found');
         const order = await resp.json();
         orderId = order.id;
