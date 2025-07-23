@@ -143,6 +143,32 @@ CREATE TABLE IF NOT EXISTS user (
     FOREIGN KEY(company_id) REFERENCES company(id)
 );
 
+CREATE TABLE IF NOT EXISTS subscription (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    partner_id INTEGER NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    billing_cycle TEXT CHECK(billing_cycle IN ('daily', 'weekly', 'monthly', 'yearly')),
+    next_invoice_date DATE,
+    status TEXT CHECK(status IN ('active', 'cancelled', 'expired')) DEFAULT 'active',
+    terms_conditions BLOB,     -- terms and conditions as a BLOB (e.g. PDF)
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(partner_id) REFERENCES partner(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
+);
+
+
+CREATE TABLE IF NOT EXISTS subscription_line (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscription_id INTEGER NOT NULL,
+    sale_order_id INTEGER,
+    FOREIGN KEY(subscription_id) REFERENCES subscription(id),
+    FOREIGN KEY(sale_order_id) REFERENCES sale_order(id)
+);
+
+
 -- CReate Warehouse
 CREATE TABLE IF NOT EXISTS warehouse (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -472,7 +498,7 @@ CREATE TABLE IF NOT EXISTS return_order (
 
     ship BOOLEAN DEFAULT 1, -- whether the return should be shipped back
     carrier_id INTEGER, -- carrier for this return (if shipping is enabled)
-    
+
     priority INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL CHECK (status IN ('draft','confirmed','done','cancelled')) DEFAULT 'draft',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
