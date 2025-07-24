@@ -2906,17 +2906,17 @@ INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, descr
 -- Input A/B (left side, away from shelves)
 ('LOC01.1', -10.0, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input A', 0),
 ('LOC01.2', -10.0, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input B', 0),
-('LOC01.3', -10.0, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
+('LOC01.3', -10.0, 15, 10, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
 
 -- Quality Check A/B (far left, higher y)
 ('LOC05.1', -10.0, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check A', 0),
 ('LOC05.2', -10.0, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check B', 0),
-('LOC05.3', -10.0, 15, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
+('LOC05.3', -10.0, 30, 10, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
 
 -- Output (far right, higher y)
 ('LOC04.1', 40, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output A', 0),
 ('LOC04.2', 40, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output B', 0),
-('LOC04.3', 40, 40, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output Priority', 0),
+('LOC04.3', 40, 30, 10, 4.5, 4.5, 4.5, 1, NULL, 'Output Priority', 0),
 
 -- Packing (far right, away from shelves)
 ('LOC03.1', 40, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Default Packing', 0),
