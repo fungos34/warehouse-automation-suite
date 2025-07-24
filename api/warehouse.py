@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response
 from database import get_conn
 from models import (
@@ -298,6 +299,10 @@ def get_items(): # username: str = Depends(get_current_username)
                 i.sku, 
                 i.vendor_id,
                 i.cost,
+                i.is_sellable,
+                i.is_digital,
+                i.is_assemblable,
+                i.is_disassemblable,
                 cost_cur.code AS cost_currency_code,
                 i.cost_currency_id,
                 pli.price AS sales_price,
@@ -311,7 +316,17 @@ def get_items(): # username: str = Depends(get_current_username)
         """, (price_list_id,) if price_list_id else ()).fetchall()
         return [dict(row) for row in result]
 
-
+@router.get("/items/by-sku/{sku}", tags=["Catalog"])
+def get_item_by_sku(sku: str):
+    with get_conn() as conn:
+        cur = conn.execute("SELECT * FROM item WHERE sku = ?", (sku,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        # Convert row to dict
+        columns = [col[0] for col in cur.description]
+        item = dict(zip(columns, row))
+        return item
 
 @router.get("/warehouse-items", tags=["Warehouse"])
 def get_warehouse_items(username: str = Depends(get_current_username)):

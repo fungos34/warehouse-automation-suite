@@ -11,30 +11,52 @@
     <div id="item-list"></div>
     <hr style="margin:20px 0;">
     <h4>Cart</h4>
-    <div id="cart-list"></div>
+    <div id="cart-options">
+        <label><input type="radio" name="delivery" value="ship" checked> Ship to address</label>
+        <label><input type="radio" name="delivery" value="pickup"> Pick up at warehouse</label>
+        <div id="pickup-address" style="display:none;">
+            <small>Pickup address: Main Warehouse, Warehouse St 1, 12345 City</small>
+        </div>
+        <label><input type="checkbox" id="split-parcel"> Allow parcel split</label>
+        <label><input type="checkbox" id="pick-pack"> Pick & Pack by fulfillment service</label>
+    </div>
+    <div id="cart-list" class="cart-fancy">
+      <!-- Cart items will be rendered here -->
+    </div>
     <button id="buy-btn">Buy</button>
     <div id="buy-result"></div>
     <!-- Customer details form (hidden by default) -->
     <div id="customer-form" style="display:none;">
-      <h4>Enter your details</h4>
       <form id="partner-form">
+        <h4>Shipping Address</h4>
+        <!-- Shipping fields -->
         <input id="partner-name" placeholder="Full Name" required><br>
         <input id="partner-email" placeholder="Email" required><br>
         <input id="partner-phone" placeholder="Phone" required><br>
-        <input id="partner-street" placeholder="Shipping Street" required><br>
-        <input id="partner-city" placeholder="Shipping City" required><br>
-        <input id="partner-zip" placeholder="Shipping ZIP" required><br>
-        <input id="partner-country" placeholder="Shipping Country" required><br>
-        <input id="partner-billing-street" placeholder="Billing Street" required><br>
-        <input id="partner-billing-city" placeholder="Billing City" required><br>
-        <input id="partner-billing-zip" placeholder="Billing ZIP" required><br>
-        <input id="partner-billing-country" placeholder="Billing Country" required><br>
-        <button type="submit">Confirm</button>
+        <input id="partner-street" placeholder="Street" required><br>
+        <input id="partner-city" placeholder="City" required><br>
+        <input id="partner-zip" placeholder="ZIP" required><br>
+        <input id="partner-country" placeholder="Country" required><br>
+        <label><input type="checkbox" id="billing-different"> Billing address is different</label>
+        <div id="billing-fields" style="display:none;">
+          <h4>Billing Address</h4>
+          <input id="partner-billing-street" placeholder="Billing Street"><br>
+          <input id="partner-billing-city" placeholder="Billing City"><br>
+          <input id="partner-billing-zip" placeholder="Billing ZIP"><br>
+          <input id="partner-billing-country" placeholder="Billing Country"><br>
+        </div>
+        <button type="submit">Confirm Address</button>
+        <!-- Shipping options always below address, visually separated -->
+        <div id="shipping-options" style="display:none; margin-top:20px;">
+          <h4>Shipping Options</h4>
+          <select id="shipping-rate-select"></select>
+          <div id="shipping-rate-info" style="margin-top:8px;"></div>
+          <button type="button" id="confirm-carrier-btn" style="margin-top:10px;display:none;" disabled>Confirm Carrier</button>
+        </div>
         <button type="button" id="partner-cancel-btn" style="margin-left:10px;">Cancel</button>
-        <button type="button" id="create-shippo-address-btn" style="margin-left:10px;">Generate Shipping Label</button>
-        <a id="download-label-btn"></a>
       </form>
       <div id="partner-error" style="color:red"></div>
+      <div id="quotation-preview"></div>
     </div>
     <div id="customer-form-overlay" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.25);z-index:1999;"></div>
   </div>

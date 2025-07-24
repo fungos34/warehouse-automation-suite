@@ -495,11 +495,11 @@ CREATE TABLE IF NOT EXISTS return_order (
     origin_model TEXT NOT NULL,
     origin_id INTEGER NOT NULL,
     partner_id INTEGER NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
 
     ship BOOLEAN DEFAULT 1, -- whether the return should be shipped back
     carrier_id INTEGER, -- carrier for this return (if shipping is enabled)
 
-    priority INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL CHECK (status IN ('draft','confirmed','done','cancelled')) DEFAULT 'draft',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(partner_id) REFERENCES partner(id)
@@ -782,7 +782,8 @@ BEGIN
             (SELECT priority FROM trigger WHERE origin_model='return_order' AND origin_id=NEW.return_order_id ORDER BY id DESC LIMIT 1),
             0
         )
-    WHERE NEW.quantity > 0;
+    FROM return_order ro
+    WHERE ro.id = NEW.return_order_id AND ro.ship = 0 AND NEW.quantity > 0;
 END;
 
 
@@ -935,7 +936,7 @@ BEGIN
         'return_order',
         NEW.id,
         'demand',
-        (SELECT id FROM route WHERE name = 'Return Route'),
+        (SELECT id FROM route WHERE name = 'Unpacking Supply'),
         rl.item_id,
         (SELECT id FROM zone WHERE code = 'ZON01'), -- Input Zone
         rl.quantity,
@@ -945,7 +946,7 @@ BEGIN
         NEW.priority
     FROM return_line rl
     WHERE rl.return_order_id = NEW.id
-      AND NEW.ship = 0;
+      AND NEW.ship = 1;
 END;
 
 
@@ -3286,6 +3287,8 @@ INSERT INTO item (
     'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big', 'Kit consisting of Small A and Big B', NULL, NULL,
     20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1
 );
+-- Add a shipping fee item
+INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable) VALUES ('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0);
 
 -- Create a BOM for Kit Alpha
 INSERT INTO bom (file, instructions) VALUES (NULL, 'Assemble 1x Small A and 2x Big B into Kit Alpha');

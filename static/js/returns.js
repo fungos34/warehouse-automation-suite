@@ -194,17 +194,18 @@ document.addEventListener("DOMContentLoaded", async function() {
     const orderNumber = element ? element.textContent : null;
     const detailsDiv = document.getElementById('order-details');
     let orderId = null;
-    try {
-        const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
-        if (!resp.ok) throw new Error('Order not found');
-        const order = await resp.json();
-        orderId = order.id;
-        let html = `<b>Thank You ${order.partner_name}!</b><br> Your Order will be further processed when the payment has been confirmed by the bank institute.</br><b>Current Status: ${order.status}</b><br>`;
+    if (orderNumber) {
+        try {
+            const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
+            if (!resp.ok) throw new Error('Order not found');
+            const order = await resp.json();
+            orderId = order.id;
+            let html = `<b>Thank You ${order.partner_name}!</b><br> Your Order will be further processed when the payment has been confirmed by the bank institute.</br><b>Current Status: ${order.status}</b><br>`;
         html += `<iframe src="/sale-orders/${orderId}/print-order" width="100%" height="600px" style="border:1px solid #ccc;margin-top:20px"></iframe>`;
         detailsDiv.innerHTML = html;
     } catch (e) {
         detailsDiv.innerHTML = `<span style="color:red">Could not load order: ${e.message}</span>`;
-    }
+    }}
 
     document.getElementById('download-bill-btn').onclick = function() {
         window.open(`/sale-orders/${orderId}/print-order`, '_blank');
@@ -214,6 +215,33 @@ document.addEventListener("DOMContentLoaded", async function() {
         startReturnOrderByCode('sale_order', orderNumber);
     };
 });
+
+// Example: Call Shippo address creation endpoint and show result
+document.getElementById('create-shippo-address-btn').onclick = async function() {
+    try {
+        const resp = await fetch('/shippo/create-address', {
+            method: 'POST',
+            // headers: { Authorization: 'Bearer ' + jwtToken }
+        });
+        const data = await resp.json();
+        const downloadBtn = document.getElementById('download-label-btn');
+        if (downloadBtn) {
+            if (resp.ok && data.transaction.status !== 'ERROR') {
+                downloadBtn.innerHTML = "Download Label";
+                downloadBtn.href = data.transaction.label_url;
+                downloadBtn.target = "_blank";
+                downloadBtn.style.display = "inline";
+            } else {
+                downloadBtn.innerHTML = "";
+                downloadBtn.removeAttribute("href");
+                downloadBtn.style.display = "none";
+                alert('Error creating Shippo address: ' + (JSON.stringify(data)));
+            }
+        }
+    } catch (e) {
+        alert('Error creating Shippo address');
+    }
+};
 
 // Only call these if the elements exist (for admin/customer panel)
 if (document.getElementById('return-orders-list')) loadReturnOrders();

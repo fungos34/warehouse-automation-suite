@@ -1,3 +1,4 @@
+# For shipping item lookup by SKU, see /items/by-sku/{sku} in warehouse.py
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
 import stripe
 import shippo
@@ -300,53 +301,33 @@ async def stripe_webhook(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/shippo/create-address", tags=["Shipping"])
-async def create_shippo_address():
+
+# Endpoint 1: Get available carriers and rates for static addresses
+@router.get("/shippo/rates", tags=["Shipping"])
+async def get_shippo_rates():
+    address_from_data = {
+        "name": "Shawn Ippotle",
+        "street1": "215 Clayton St.",
+        "city": "San Francisco",
+        "state": "CA",
+        "zip": "94117",
+        "country": "US",
+        "email": "shippotle@shippo.com",
+        "phone": "+1 555 341 9393"
+    }
+    address_to_data = {
+        "name": "Mr Hippo Pippo",
+        "street1": "1 Broadway",
+        "city": "New York",
+        "state": "NY",
+        "zip": "10004",
+        "country": "US",
+        "email": "hippopippo@example.com",
+        "phone": "+1 555 351 9097"
+    }
     address_from, address_to = await asyncio.gather(
-        create_shippo_address_async(
-            #             {
-            # "name": "Anna Schneider",
-            # "street1": "Hauptstraße 45",
-            # "city": "Berlin",
-            # "state": "BE",
-            # "zip": "10115",
-            # "country": "DE",
-            # "email": "anna.schneider@example.de",
-            # "phone": "+49 30 1234567"
-            # }
-            {
-                "name": "Shawn Ippotle",
-                "street1": "215 Clayton St.",
-                "city": "San Francisco",
-                "state": "CA",
-                "zip": "94117",
-                "country": "US",
-                "email": "shippotle@shippo.com",
-                "phone": "+1 555 341 9393"
-            }
-        ),
-        create_shippo_address_async(
-            # {
-            # "name": "Markus Weber",
-            # "street1": "Sonnenweg 12",
-            # "city": "München",
-            # "state": "BY",
-            # "zip": "80331",
-            # "country": "DE",
-            # "email": "markus.weber@example.de",
-            # "phone": "+49 89 9876543"
-            # }
-        {
-                "name": "Mr Hippo Pippo",
-                "street1": "1 Broadway",
-                "city": "New York",
-                "state": "NY",
-                "zip": "10004",
-                "country": "US",
-                "email": "hippopippo@example.com",
-                "phone": "+1 555 351 9097"
-            }
-        ),
+        create_shippo_address_async(address_from_data),
+        create_shippo_address_async(address_to_data),
     )
     parcel = components.ParcelCreateRequest(
         length="5",
@@ -356,7 +337,6 @@ async def create_shippo_address():
         weight="2",
         mass_unit=components.WeightUnitEnum.KG
     )
-
     shipment = shippo_sdk.shipments.create(
         components.ShipmentCreateRequest(
             address_from=address_from,
@@ -365,33 +345,40 @@ async def create_shippo_address():
             async_=False
         )
     )
-    # Get the first rate in the rates results.
-    # Customize this based on your business logic.
-    rate = None
-    for meta in shipment.rates:
-        if meta.provider.upper() == "USPS":
-            rate = meta
+    # Return all rates with carrier, service, price, currency, and object_id
+    rates = [
+        {
+            "provider": r.provider,
+            "servicelevel": r.servicelevel.name,
+            "amount": r.amount,
+            "currency": r.currency,
+            "object_id": r.object_id
+        }
+        for r in shipment.rates
+    ]
+    return {"rates": rates}
 
-    if not rate:
-        rate = shipment.rates[random.randint(0, len(shipment.rates) - 1)]
-
-    # Purchase the desired rate. 
+# Endpoint 2: Purchase label for selected rate
+@router.post("/shippo/purchase-label", tags=["Shipping"])
+async def purchase_shippo_label(rate_id: str):
     transaction = shippo_sdk.transactions.create(
         components.TransactionCreateRequest(
-            rate=rate.object_id,
+            rate=rate_id,
             label_file_type=components.LabelFileTypeEnum.PDF,
             async_=False
         )
     )
-
-    # Retrieve label url and tracking number or error message
     if transaction.status == "SUCCESS":
-        print(transaction.label_url)
-        print(transaction.tracking_number)
+        return {
+            "label_url": transaction.label_url,
+            "tracking_number": transaction.tracking_number,
+            "amount": transaction.amount,
+            "currency": transaction.currency,
+            "provider": transaction.provider,
+            "servicelevel": transaction.servicelevel.name
+        }
     else:
-        print(transaction.messages)
-
-    return {"transaction": transaction}
+        return {"error": transaction.messages}
 
 async def create_shippo_address_async(address):
     return components.AddressCreateRequest(
@@ -796,3 +783,117 @@ def print_sale_order_label(sale_order_id: int, username: str = Depends(get_curre
         headers={"Content-Disposition": f'attachment; filename=\"sale_label_{sale_code}.pdf\"'}
     )
 
+
+@router.get("/quotations/{quotation_id}/print", tags=["Documents"])
+def print_quotation_pdf(quotation_id: int):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from io import BytesIO
+    from datetime import datetime
+    from utils import add_page_number_and_qr
+
+    with get_conn() as conn:
+        quotation = conn.execute("SELECT * FROM quotation WHERE id = ?", (quotation_id,)).fetchone()
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        buyer = conn.execute("SELECT * FROM partner WHERE id = ?", (quotation["partner_id"],)).fetchone()
+        lines = conn.execute("""
+            SELECT ql.quantity, ql.price, i.name as item_name, i.sku as item_sku, ql.lot_id, l.lot_number as lot_code
+            FROM quotation_line ql
+            JOIN item i ON ql.item_id = i.id
+            LEFT JOIN lot l ON ql.lot_id = l.id
+            WHERE ql.quotation_id = ?
+        """, (quotation_id,)).fetchall()
+        company = conn.execute("""
+            SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
+            FROM company c
+            JOIN partner p ON c.partner_id = p.id
+            LIMIT 1
+        """).fetchone()
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Company info
+    company_lines = [
+        f"<b>{company['name'] if company else 'Warehouse Company'}</b>",
+        f"{company['street']}, {company['zip']} {company['city']}, {company['country']}" if company else "",
+        f"Phone: {company['phone']}" if company and company['phone'] else "",
+        f"Email: {company['email']}" if company and company['email'] else "",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, company_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Billing Address (Buyer)
+    billing_lines = [
+        "<b>Billing Address:</b>",
+        buyer["name"] if buyer else "",
+        buyer["billing_street"] if buyer and "billing_street" in buyer.keys() and buyer["billing_street"] else "",
+        f"{buyer['billing_zip']} {buyer['billing_city']}, {buyer['billing_country']}" if buyer and "billing_zip" in buyer.keys() else "",
+        f"Phone: {buyer['phone']}" if buyer and "phone" in buyer.keys() and buyer["phone"] else "",
+        f"Email: {buyer['email']}" if buyer and "email" in buyer.keys() and buyer["email"] else "",
+    ]
+    elements.append(Paragraph("<br/>".join(filter(None, billing_lines)), styles["Normal"]))
+    elements.append(Spacer(1, 12))
+
+    # Date and Quotation Info
+    elements.append(Paragraph(f"Date: {datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Quotation Number {quotation['code']}</b>", styles["Title"]))
+    elements.append(Paragraph(f"Status: {quotation['status']}", styles["Normal"]))
+    elements.append(Paragraph(
+        "<font size='8' color='gray'>Note: This document is not a valid bill, but a non-binding offer.</font>",
+        styles["Normal"]
+    ))
+    elements.append(Spacer(1, 12))
+
+    # Table for items
+    data = [["Item", "SKU", "Lot", "Qty", "Unit €", "Total €"]]
+    subtotal = 0.0
+
+    for line in lines:
+        qty = float(line["quantity"])
+        price = float(line["price"]) if "price" in line.keys() and line["price"] is not None else 0.0
+        lot_code = line["lot_code"] or ""
+        line_total = qty * price
+        subtotal += line_total
+        data.append([
+            line["item_name"],
+            line["item_sku"],
+            lot_code,
+            str(int(qty)) if qty == int(qty) else f"{qty:.2f}",
+            f"{price:.2f}",
+            f"{line_total:.2f}"
+        ])
+
+    table = Table(data, colWidths=[120, 45, 90, 35, 45, 55])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+        ('ALIGN', (1,1), (-1,-1), 'CENTER'),
+        ('ALIGN', (3,1), (-1,-1), 'RIGHT'),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,0), 6),
+        ('TOPPADDING', (0,0), (-1,0), 6),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 18))
+
+    # Summary
+    elements.append(Paragraph(f"Subtotal: {subtotal:.2f} €", styles["Normal"]))
+    elements.append(Paragraph(f"<b>Total: {subtotal:.2f} €</b>", styles["Title"]))
+
+    doc.build(elements, onFirstPage=lambda c, d: add_page_number_and_qr(c, d, quotation['code']),
+          onLaterPages=lambda c, d: add_page_number_and_qr(c, d, quotation['code']))
+    buffer.seek(0)
+    return Response(
+        buffer.read(),
+        media_type="application/pdf",
+        headers = {"Content-Disposition": "inline; filename=quotation_" + quotation['code'] + ".pdf"}
+    )
