@@ -20,6 +20,7 @@ class OperationTypeEnum(str, Enum):
 class OrderLineIn(BaseModel):
     quantity: int = Field(..., example=10)
     item_id: int = Field(..., example=1)
+    lot_id: Optional[int] = Field(None, example=1)
     price: float = Field(..., example=12.50)
     currency_id: int = Field(..., example=1)
     cost: float = Field(..., example=7.00)
@@ -67,6 +68,16 @@ class TransferOrderCreate(BaseModel):
 class QuotationCreate(BaseModel):
     code: str = ""
     partner_id: int
+    currency_id: Optional[int] = None
+    tax_id: Optional[int] = None
+    discount_id: Optional[int] = None
+    price_list_id: Optional[int] = None
+    split_parcel: Optional[bool] = False
+    pick_pack: Optional[bool] = True
+    ship: Optional[bool] = True
+    carrier_id: Optional[int] = None
+    notes: Optional[str] = ""
+    priority: Optional[int] = 0
 
 class ReturnLineIn(BaseModel):
     item_id: int
@@ -95,3 +106,11 @@ class ManufacturingOrderCreate(BaseModel):
     quantity: int
     planned_start: Optional[str] = None
     planned_end: Optional[str] = None
+
+class LotCreate(BaseModel):
+    item_id: int
+    lot_number: str
+    notes: str = ""
+
+class PurchaseLabelRequest(BaseModel):
+    rate_id: str

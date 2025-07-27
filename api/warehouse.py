@@ -1,10 +1,10 @@
-
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response, Query
 from database import get_conn
 from models import (
     TransferOrderCreate, TransferOrderLineIn,
-    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate
+    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate, LotCreate
 )
+import requests
 from auth import get_current_username
 from typing import List
 import uuid
@@ -16,6 +16,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from io import BytesIO
 from PIL import Image as PILImage
 from utils import add_page_number_and_qr
+from run import base_url 
 
 router = APIRouter()
 
@@ -106,12 +107,64 @@ def add_stock_adjustment(
 
 
 @router.get("/stock/{item_id}", tags=["Warehouse"])
-def get_stock_by_item(item_id: int, username: str = Depends(get_current_username)):
+def get_stock_by_item(item_id: int):  # username: str = Depends(get_current_username) # used during quotation and shipping cost calculation.
     with get_conn() as conn:
         result = conn.execute("""
             SELECT * FROM stock_by_location WHERE item_id = ?
         """, (item_id,))
         return [dict(row) for row in result]
+
+
+@router.get("/dropshipping-decision", tags=["Warehouse"])
+def get_dropshipping_decision(
+    question_id: int = Query(None, description="If set, fetch answer for this question id"),
+    item_id: int = Query(None),
+    vendor_id: int = Query(None),
+    customer_id: int = Query(None),
+    carrier_id: int = Query(None),
+    ordered_quantity: float = Query(None),
+    vendor_accepts_dropship: bool = Query(None),
+    warehouse_stock: float = Query(None),
+    vendor_stock: float = Query(None),
+    shipping_cost_vendor_customer: float = Query(None),
+    shipping_cost_warehouse_customer: float = Query(None),
+    # username: str = Depends(get_current_username)
+):
+    """
+    Fetch dropshipping decision answer.
+    If question_id is given, fetch by id.
+    Otherwise, insert a new question and return the answer.
+    """
+    with get_conn() as conn:
+        if question_id:
+            row = conn.execute(
+                "SELECT answer FROM dropshipping_question WHERE id = ?",
+                (question_id,)
+            ).fetchone()
+            if not row or row["answer"] is None:
+                raise HTTPException(status_code=404, detail="Question not found or answer not available yet")
+            return {"answer": row["answer"], "question_id": question_id}
+        # Validate required fields for new question (carrier_id is now optional)
+        required = [item_id, vendor_id, customer_id, ordered_quantity]
+        if any(v is None for v in required):
+            raise HTTPException(status_code=400, detail="Missing required fields for dropshipping decision")
+        try:
+            cur = conn.execute(
+                "INSERT INTO dropshipping_question (item_id, vendor_id, customer_id, carrier_id, ordered_quantity, vendor_accepts_dropship, warehouse_stock, vendor_stock, shipping_cost_vendor_customer, shipping_cost_warehouse_customer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item_id, vendor_id, customer_id, carrier_id, ordered_quantity, vendor_accepts_dropship, warehouse_stock, vendor_stock, shipping_cost_vendor_customer, shipping_cost_warehouse_customer)
+            )
+            question_id = cur.lastrowid
+            # Wait for trigger to set the answer (should be immediate in SQLite)
+            row = conn.execute(
+                "SELECT answer FROM dropshipping_question WHERE id = ?",
+                (question_id,)
+            ).fetchone()
+            if not row or row["answer"] is None:
+                raise HTTPException(status_code=500, detail="Decision could not be determined")
+            return {"answer": row["answer"], "question_id": question_id}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {e}")
+        
 
 @router.get("/lots", tags=["Warehouse"])
 def get_lots(username: str = Depends(get_current_username)):
@@ -130,6 +183,16 @@ def get_lots(username: str = Depends(get_current_username)):
             ORDER BY id DESC
         """).fetchall()
         return [dict(row) for row in result]
+
+@router.post("/lots", tags=["Warehouse"])
+def create_lot(data: LotCreate):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO lot (item_id, lot_number, notes) VALUES (?, ?, ?)",
+            (data.item_id, data.lot_number, data.notes)
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
 
 # --- LOCATION ZONES ---
 @router.get("/location-zones", tags=["Warehouse"])
@@ -281,6 +344,15 @@ def get_zones(username: str = Depends(get_current_username)):
         result = conn.execute("SELECT id, code, description FROM zone ORDER BY id").fetchall()
         return [dict(row) for row in result]
 
+@router.get("/items/{item_id}/vendor", tags=["Catalog"])
+def get_item_vendor(item_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT vendor_id FROM item WHERE id = ?", (item_id,)).fetchone()
+        if not row or row["vendor_id"] is None:
+            raise HTTPException(status_code=404, detail="Vendor not found for this item")
+        return {"vendor_id": row["vendor_id"]}
+
+
 @router.get("/items", tags=["Catalog"])
 def get_items(): # username: str = Depends(get_current_username)
     with get_conn() as conn:
@@ -398,6 +470,7 @@ def list_manufacturing_orders(status: str = None, username: str = Depends(get_cu
 
 @router.post("/manufacturing-orders/{mo_id}/done", tags=["Warehouse"])
 def set_manufacturing_order_done(mo_id: int, username: str = Depends(get_current_username)):
+    print(f"Setting manufacturing order {mo_id} to done")
     with get_conn() as conn:
         updated = conn.execute(
             "UPDATE manufacturing_order SET status = 'done' WHERE id = ? AND status = 'confirmed'", (mo_id,)
@@ -405,9 +478,99 @@ def set_manufacturing_order_done(mo_id: int, username: str = Depends(get_current
         conn.commit()
         if not updated:
             raise HTTPException(status_code=404, detail="Manufacturing order not found or not in confirmed status")
-    return {"message": "Manufacturing order set to done"}
+
+        # --- Carrier label logic ---
+        # 1. Find the SO via trigger
+        mo = conn.execute("SELECT * FROM manufacturing_order WHERE id = ?", (mo_id,)).fetchone()
+        if not mo or not mo["trigger_id"]:
+            return {"message": "Manufacturing order set to done (no trigger, no label generated)"}
+        trigger = conn.execute("SELECT * FROM trigger WHERE id = ?", (mo["trigger_id"],)).fetchone()
+        if not trigger or trigger["origin_model"] != "unbuild_order":
+            return {"message": "Manufacturing order set to done (no UO trigger, no label generated)"}
+        uo = conn.execute("SELECT * FROM unbuild_order WHERE id = ?", (trigger["origin_id"],)).fetchone()
+        if not uo:
+            return {"message": "Manufacturing order set to done (no UO found, no label generated)"}
+        
+        # 2. Find the SO via UO
+        if not uo["origin_id"] or not uo["origin_model"] or uo["origin_model"] != "sale_order":
+            return {"message": "Manufacturing order set to done (no SO in UO, no label generated)"}
+        so = conn.execute("SELECT * FROM sale_order WHERE id = ?", (uo["origin_id"],)).fetchone()
+        if not so:
+            return {"message": "Manufacturing order set to done (no SO found, no label generated)"}
+        quotation = conn.execute("SELECT * FROM quotation WHERE id = ?", (so["quotation_id"],)).fetchone()
+        if not quotation or not quotation["ship"]:
+            return {"message": "Manufacturing order set to done (not a shipping order, no label generated)"}
+        print("✅ Manufacturing order set to done, found SO and quotation:", so, quotation)
+        # 2. Find the shipping quotation_line (with carrier_id) and its lot_id
+        shipping_line = conn.execute("""
+            SELECT lot_id
+            FROM quotation_line
+            WHERE quotation_id = ? AND lot_id IS NOT NULL
+            ORDER BY id DESC LIMIT 1
+        """, (quotation["id"],)).fetchone()
+        print("✅ Shipping line found:", shipping_line)
+        if not shipping_line or not shipping_line["lot_id"]:
+            return {"message": "MO done, but no shipping lot_id found in quotation lines"}
+
+        lot_id = shipping_line["lot_id"]
+
+        # 3. Get the rate_id from the lot.note field
+        lot = conn.execute("SELECT notes FROM lot WHERE id = ?", (lot_id,)).fetchone()
+        if not lot or not lot["notes"]:
+            return {"message": "MO done, but no Shippo rate_id found in lot notes"}
+        rate_id = lot["notes"]
+
+        # 4. Call Shippo label endpoint with rate_id
+        try:
+            print("rate id: ", rate_id.strip())
+            shippo_resp = requests.post(
+                f"{base_url}shippo/purchase-label",
+                json={"rate_id": rate_id.strip()}
+            )
+            shippo_resp.raise_for_status()
+            label_info = shippo_resp.json()
+            if "label_url" not in label_info:
+                return {"message": f"MO done, but label generation failed: {label_info.get('error', 'Unknown error')}"}
+            label_url = label_info["label_url"]
+            tracking_number = label_info.get("tracking_number", "N/A")
+            print("✅ Carrier label generated:", label_url, tracking_number)
+        except Exception as e:
+            return {"message": f"MO done, but label generation failed: {e}"}
+
+        # 5. Store label URL and lot_id in DB
+        conn.execute(
+            "INSERT INTO carrier_label (mo_id, lot_id, label_url, tracking_number) VALUES (?, ?, ?, ?)",
+            (mo_id, lot_id, label_url, tracking_number)
+        )
+        conn.commit()
+        return {
+            "message": "Manufacturing order set to done, carrier label generated",
+            "label_url": label_url,
+            "lot_id": lot_id
+        }
 
 
+# Endpoint to download or redirect to the label
+@router.get("/manufacturing-orders/{mo_id}/carrier-label", tags=["Warehouse"])
+def download_carrier_label(mo_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT label_url FROM carrier_label WHERE mo_id = ? ORDER BY id DESC LIMIT 1", (mo_id,)
+        ).fetchone()
+        if not row or not row["label_url"]:
+            raise HTTPException(status_code=404, detail="Carrier label not found")
+        # Fetch the PDF and return as attachment
+        resp = requests.get(row["label_url"])
+        if resp.ok:
+            return Response(
+                resp.content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"inline; filename=carrier_label_MO_{mo_id}.pdf"}
+            )
+        else:
+            raise HTTPException(status_code=502, detail="Failed to fetch label from Shippo")
+
+    
 @router.post("/manufacturing-orders/{mo_id}/confirm", tags=["Warehouse"])
 def confirm_manufacturing_order(mo_id: int, username: str = Depends(get_current_username)):
     with get_conn() as conn:
@@ -734,7 +897,7 @@ def download_manufacturing_receipt_pdf(mo_id: int, username: str = Depends(get_c
         lot_number = "-"
         if "lot_id" in bl.keys() and bl["lot_id"]:
             lot_row = conn.execute("SELECT lot_number FROM lot WHERE id = ?", (bl["lot_id"],)).fetchone()
-            lot_number = lot_row["lot_number"] if lot_row and lot_row["lot_number"] else "-"
+            lot_number = lot_row["lot_number"] if lot_row and lot_row["lot_number"] is not None else "-"
         bom_data.append([
             bl["component_name"],
             bl["component_sku"],

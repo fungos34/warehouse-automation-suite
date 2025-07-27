@@ -442,6 +442,28 @@ document.getElementById('mo-done-btn').onclick = async function() {
     fetchManufacturingOrders();
 };
 
+// Add a button in your MO details panel:
+document.getElementById('mo-download-label-btn').onclick = async function() {
+    const moId = document.getElementById('mo-select-confirmed').value;
+    if (!moId) return;
+    const resp = await fetch(`/manufacturing-orders/${moId}/carrier-label`, {
+        headers: { Authorization: 'Bearer ' + jwtToken }
+    });
+    if (!resp.ok) {
+        alert('Carrier label not available');
+        return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `carrier_label_MO_${moId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+};
+
 document.getElementById('mo-confirm-btn').onclick = async function() {
     const moId = document.getElementById('mo-select').value;
     if (!moId) return;

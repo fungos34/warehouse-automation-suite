@@ -107,6 +107,25 @@ CREATE TABLE IF NOT EXISTS lot (
     FOREIGN KEY(item_id) REFERENCES item(id)
 );
 
+-- Add this to your schema.sql
+CREATE TABLE IF NOT EXISTS carrier_label (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mo_id INTEGER NOT NULL,
+    lot_id INTEGER, -- lot linking quotation line to label
+    label_pdf BLOB,
+    label_url TEXT,
+    tracking_number TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    carrier_id INTEGER,
+    sender_id INTEGER,
+    recipient_id INTEGER,
+    FOREIGN KEY(carrier_id) REFERENCES partner(id),
+    FOREIGN KEY(sender_id) REFERENCES partner(id),
+    FOREIGN KEY(recipient_id) REFERENCES partner(id),
+    FOREIGN KEY(mo_id) REFERENCES manufacturing_order(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
+);
+
 -- Create partner
 CREATE TABLE IF NOT EXISTS partner (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -356,7 +375,7 @@ CREATE TABLE IF NOT EXISTS quotation_line (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     quantity REAL NOT NULL,
     item_id INTEGER NOT NULL,
-    lot_id INTEGER,    
+    lot_id INTEGER,
     quotation_id INTEGER NOT NULL,
     route_id INTEGER,
     price REAL,                       -- NEW: unit price for this line
@@ -569,6 +588,8 @@ CREATE TABLE IF NOT EXISTS unbuild_order (
     unbuild_location_id INTEGER,      -- Location where the unbuilding takes place
     unbuild_zone_id INTEGER,
     origin TEXT,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'transfer_order', 'purchase_order', 'stock', 'return_order', 'manufacturing_order', 'unbuild_order')) NOT NULL,
+    origin_id INTEGER,                -- ID of the originating document
     trigger_id INTEGER,               -- Link to the trigger that caused this UO
     priority INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(item_id) REFERENCES item(id),
@@ -671,6 +692,73 @@ CREATE TABLE IF NOT EXISTS debug_log (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+
+CREATE TABLE IF NOT EXISTS dropshipping_policy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER DEFAULT NULL,                       -- NULL = applies to all items
+    vendor_id INTEGER DEFAULT NULL,                     -- NULL = applies to all vendors
+    customer_id INTEGER DEFAULT NULL,                   -- NULL = applies to all customers
+    carrier_id INTEGER DEFAULT NULL,                    -- NULL = applies to all carriers
+    vendor_accepts_dropship BOOLEAN DEFAULT NULL,       -- Vendor preference
+    ordered_quantity_below REAL DEFAULT NULL,           -- NULL = no minimum
+    ordered_quantity_above REAL DEFAULT NULL,           -- NULL = no maximum
+    warehouse_stock_threshold REAL DEFAULT NULL,        -- If warehouse stock below this, prefer dropship
+    vendor_stock_threshold REAL DEFAULT NULL,           -- If vendor stock above this, prefer dropship
+    vendor_shipping_cost_lower BOOLEAN DEFAULT NULL,    -- If true, prefer dropship
+    action TEXT CHECK(action IN ('dropship','warehouse','auto')) NOT NULL DEFAULT 'auto',
+    priority INTEGER DEFAULT 0,                         -- Higher = higher priority
+    active BOOLEAN DEFAULT 1,
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(vendor_id) REFERENCES partner(id),
+    FOREIGN KEY(customer_id) REFERENCES partner(id),
+    FOREIGN KEY(carrier_id) REFERENCES partner(id)
+);
+
+CREATE TABLE IF NOT EXISTS dropshipping_question (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER,
+    vendor_id INTEGER,
+    customer_id INTEGER,
+    carrier_id INTEGER,
+    ordered_quantity REAL NOT NULL,
+    vendor_accepts_dropship BOOLEAN,
+    warehouse_stock REAL,
+    vendor_stock REAL,
+    shipping_cost_vendor_customer REAL,
+    shipping_cost_warehouse_customer REAL,
+    answer TEXT, -- Will be set by the trigger
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(vendor_id) REFERENCES partner(id),
+    FOREIGN KEY(customer_id) REFERENCES partner(id),
+    FOREIGN KEY(carrier_id) REFERENCES partner(id)
+);
+
+DROP TRIGGER IF EXISTS trg_dropshipping_answer;
+CREATE TRIGGER trg_dropshipping_answer
+AFTER INSERT ON dropshipping_question
+BEGIN
+    UPDATE dropshipping_question
+    SET answer = (
+        SELECT action
+        FROM dropshipping_policy
+        WHERE
+            (item_id IS NULL OR item_id = NEW.item_id)
+            AND (vendor_id IS NULL OR vendor_id = NEW.vendor_id)
+            AND (customer_id IS NULL OR customer_id = NEW.customer_id)
+            AND (carrier_id IS NULL OR carrier_id = NEW.carrier_id)
+            AND (ordered_quantity_below IS NULL OR NEW.ordered_quantity < ordered_quantity_below)
+            AND (ordered_quantity_above IS NULL OR NEW.ordered_quantity > ordered_quantity_above)
+            AND (vendor_accepts_dropship IS NULL OR vendor_accepts_dropship = NEW.vendor_accepts_dropship)
+            AND (warehouse_stock_threshold IS NULL OR NEW.warehouse_stock <= warehouse_stock_threshold)
+            AND (vendor_stock_threshold IS NULL OR NEW.vendor_stock >= vendor_stock_threshold)
+            -- Remove or add shipping cost logic here if you add a column for it
+            AND active = 1
+        ORDER BY priority DESC, id DESC
+        LIMIT 1
+    )
+    WHERE id = NEW.id;
+END;
 
 -- trigger trg_return_line_split_and_lot
 DROP TRIGGER IF EXISTS trg_return_line_split_and_lot;
@@ -897,7 +985,7 @@ BEGIN
 
     -- Create unbuild order at input zone and confirm it
     INSERT INTO unbuild_order (
-        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
+        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, origin_model, origin_id, trigger_id, priority
     )
     SELECT
         'UO_RET_' || NEW.code,
@@ -907,6 +995,8 @@ BEGIN
         'draft',
         (SELECT l.id FROM location l JOIN location_zone lz ON l.id = lz.location_id JOIN zone z ON lz.zone_id = z.id WHERE z.code = 'ZON01' LIMIT 1),
         'Auto-created for RO ' || NEW.code,
+        'return_order',
+        NEW.id,
         NULL,
         NEW.priority
     WHERE NEW.ship = 1;
@@ -1592,7 +1682,7 @@ WHEN NEW.sku LIKE 'PKG-%'
 BEGIN
     -- Find the sale order for this parcel (by code)
     INSERT INTO unbuild_order (
-        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
+        code, partner_id, item_id, quantity, status, unbuild_location_id, origin, origin_model, origin_id, trigger_id, priority
     )
     SELECT
         'UO_' || so.code || '_' || NEW.sku,
@@ -1602,6 +1692,8 @@ BEGIN
         'draft',
         (SELECT l.id FROM location l WHERE l.partner_id = so.partner_id LIMIT 1),
         'Auto-created for SO ' || so.code,
+        'sale_order',
+        so.id,
         NULL,
         so.priority
     FROM sale_order so
@@ -1824,6 +1916,17 @@ CREATE TRIGGER trg_quotation_confirmed_create_sale_order_and_lines
 AFTER UPDATE OF status ON quotation
 WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
 BEGIN
+
+    -- Log for debugging
+    INSERT INTO debug_log (event, info)
+    VALUES (
+        'trg_quotation_confirmed_create_sale_order_and_lines',
+        'Fired for quotation ' || NEW.code ||
+        ', status=' || NEW.status ||
+        ', partner_id=' || NEW.partner_id
+    );
+    INSERT INTO debug_log (event, info) VALUES ('TRIGGER_FIRED', 'trg_quotation_confirmed_create_sale_order_and_lines fired for quotation ' || NEW.id || ', code=' || NEW.code);
+
     -- 1. Create sale order
     INSERT INTO sale_order (
         code,
@@ -2906,17 +3009,17 @@ INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, descr
 -- Input A/B (left side, away from shelves)
 ('LOC01.1', -10.0, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input A', 0),
 ('LOC01.2', -10.0, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input B', 0),
-('LOC01.3', -10.0, 15, 10, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
+('LOC01.3', -20.0, 10, 0, 4.5, 4.5, 4.5, 1, NULL, 'Input Priority', 0),
 
 -- Quality Check A/B (far left, higher y)
 ('LOC05.1', -10.0, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check A', 0),
 ('LOC05.2', -10.0, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check B', 0),
-('LOC05.3', -10.0, 30, 10, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
+('LOC05.3', -20.0, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Quality Check Priority', 0),
 
 -- Output (far right, higher y)
 ('LOC04.1', 40, 20, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output A', 0),
 ('LOC04.2', 40, 30, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output B', 0),
-('LOC04.3', 40, 30, 10, 4.5, 4.5, 4.5, 1, NULL, 'Output Priority', 0),
+('LOC04.3', 40, 40, 0, 4.5, 4.5, 4.5, 1, NULL, 'Output Priority', 0),
 
 -- Packing (far right, away from shelves)
 ('LOC03.1', 40, 0, 0, 4.5, 4.5, 4.5, 1, NULL, 'Default Packing', 0),
@@ -2925,8 +3028,8 @@ INSERT INTO location (code, x, y, z, dx, dy, dz, warehouse_id, partner_id, descr
 -- Add a production location (or more if needed)
 ('LOC_PROD_1', 0, 45, 0, 7, 7, 2, 1, NULL, 'Production Area 1', 0),
 ('LOC_PROD_2', 0, 55, 0, 7, 7, 2, 1, NULL, 'Production Area 2', 0),
-('LOC_PROD_3', 0, 65, 0, 7, 7, 2, 1, NULL, 'Production Area 3', 0),
-('LOC_PROD_4', 0, 75, 0, 7, 7, 2, 1, NULL, 'Production Area Priority', 0);
+('LOC_PROD_3', 15, 45, 0, 7, 7, 2, 1, NULL, 'Production Area 3', 0),
+('LOC_PROD_4', 15, 55, 0, 7, 7, 2, 1, NULL, 'Production Area Priority', 0);
 
 
 -- stock locations
@@ -3288,7 +3391,8 @@ INSERT INTO item (
     20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1
 );
 -- Add a shipping fee item
-INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable) VALUES ('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0);
+INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable) VALUES 
+('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0);
 
 -- Create a BOM for Kit Alpha
 INSERT INTO bom (file, instructions) VALUES (NULL, 'Assemble 1x Small A and 2x Big B into Kit Alpha');
@@ -3408,3 +3512,23 @@ INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
 -- RULES FOR UNBUILDING TRIGGERD BY UNBUILD ORDER
 INSERT INTO rule (route_id, action, source_id, target_id, delay, active) VALUES
 ((SELECT id FROM route WHERE name = 'Unbuilding Supply'), 'pull', (SELECT id FROM zone WHERE code='ZON02'), (SELECT id FROM zone WHERE code='ZON_PROD'), 0, 1);
+
+
+
+INSERT INTO dropshipping_policy (
+    item_id,
+    vendor_id,
+    customer_id,
+    carrier_id,
+    vendor_accepts_dropship,
+    ordered_quantity_below,
+    ordered_quantity_above,
+    warehouse_stock_threshold,
+    vendor_stock_threshold,
+    vendor_shipping_cost_lower,
+    action,
+    priority,
+    active
+) VALUES 
+    (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'warehouse', 0, 1),
+    (1,    NULL, NULL, NULL, NULL, NULL, 20, NULL, NULL, NULL, 'dropship',  0, 1);

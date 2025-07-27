@@ -301,6 +301,28 @@ window.removeFromCart = function(id) {
     renderCart();
 };
 
+// Example: Assume you have all required variables for the query
+async function fetchFulfillmentStrategy(itemId, vendorId, customerId, carrierId, orderedQuantity, vendorAcceptsDropship, warehouseStock, vendorStock, shippingCostVendorCustomer, shippingCostWarehouseCustomer) {
+    const params = new URLSearchParams({
+        item_id: itemId,
+        vendor_id: vendorId,
+        customer_id: customerId,
+        ordered_quantity: orderedQuantity,
+        vendor_accepts_dropship: vendorAcceptsDropship,
+        warehouse_stock: warehouseStock,
+        vendor_stock: vendorStock
+    });
+    if (carrierId !== undefined && carrierId !== null && carrierId !== "undefined") {
+        params.append('carrier_id', carrierId);
+    }
+    if (shippingCostVendorCustomer != null) params.append('shipping_cost_vendor_customer', shippingCostVendorCustomer);
+    if (shippingCostWarehouseCustomer != null) params.append('shipping_cost_warehouse_customer', shippingCostWarehouseCustomer);
+    const resp = await fetch(`/dropshipping-decision?${params.toString()}`);
+    if (!resp.ok) throw new Error('Could not fetch fulfillment strategy');
+    const data = await resp.json();
+    return data.answer; // "dropship", "warehouse", or "auto"
+}
+
 // After address is entered, fetch shipping rates
 const shippingOptionsDiv = document.getElementById('shipping-options');
 const shippingSelect = document.getElementById('shipping-rate-select');
@@ -308,11 +330,180 @@ const shippingInfoDiv = document.getElementById('shipping-rate-info');
 let selectedShippingRate = null;
 
 async function fetchShippingRates() {
-    shippingOptionsDiv.style.display = 'none';
-    shippingSelect.innerHTML = '';
-    shippingInfoDiv.textContent = '';
+    // 1. Get the first item in the cart (assume single-item for simplicity)
+    const firstCartItem = Object.values(cart)[0];
+    if (!firstCartItem) {
+        shippingInfoDiv.textContent = 'Cart is empty.';
+        return;
+    }
+    const itemId = firstCartItem.id;
+    const orderedQuantity = firstCartItem.qty;
+
+    // 2. Fetch vendor_id for the item
+    let vendorId = null;
     try {
-        const resp = await fetch('/shippo/rates');
+        const vendorResp = await fetch(`/items/${itemId}/vendor`);
+        if (vendorResp.ok) {
+            const vendorData = await vendorResp.json();
+            vendorId = vendorData.vendor_id;
+        }
+    } catch (e) {}
+    if (!vendorId) {
+        shippingInfoDiv.textContent = 'Could not determine vendor for item.';
+        return;
+    }
+
+    // 3. Ensure customer exists and get customerId
+    let customerId = null;
+    if (currentPartner && currentPartner.id) {
+        customerId = currentPartner.id;
+    } else {
+        // Create partner (customer) if not already created
+        const partner = {
+            name: document.getElementById('partner-name').value,
+            email: document.getElementById('partner-email').value,
+            phone: document.getElementById('partner-phone').value,
+            street: document.getElementById('partner-street').value,
+            city: document.getElementById('partner-city').value,
+            zip: document.getElementById('partner-zip').value,
+            country: document.getElementById('partner-country').value,
+            billing_street: document.getElementById('partner-billing-street').value,
+            billing_city: document.getElementById('partner-billing-city').value,
+            billing_zip: document.getElementById('partner-billing-zip').value,
+            billing_country: document.getElementById('partner-billing-country').value,
+            partner_type: 'customer'
+        };
+        try {
+            const resp = await fetch('/partners', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(partner)
+            });
+            const partnerData = await resp.json();
+            if (resp.ok) {
+                customerId = partnerData.id;
+                currentPartner = partnerData;
+            }
+        } catch (e) {}
+        if (!customerId) {
+            shippingInfoDiv.textContent = 'Could not create or fetch customer.';
+            return;
+        }
+    }
+
+    // 4. Carrier is not known yet
+    let carrierId = undefined;
+
+    // 5. Vendor accepts dropship (for now, always true)
+    const vendorAcceptsDropship = 1;
+
+    // 6. Fetch vendor stock for the item
+    let vendorStock = null;
+    try {
+        const stockResp = await fetch(`/stock/${itemId}?location_type=vendor&vendor_id=${vendorId}`);
+        if (stockResp.ok) {
+            const stockData = await stockResp.json();
+            vendorStock = stockData && stockData.length ? stockData[0].quantity : 0;
+        }
+    } catch (e) {}
+    if (vendorStock === null) vendorStock = 0;
+
+    // 7. Fetch warehouse stock for the item (exclude vendor/customer zones)
+    let warehouseStock = null;
+    try {
+        const stockResp = await fetch(`/stock/${itemId}?location_type=warehouse`);
+        if (stockResp.ok) {
+            const stockData = await stockResp.json();
+            warehouseStock = stockData && stockData.length ? stockData[0].quantity : 0;
+        }
+    } catch (e) {}
+    if (warehouseStock === null) warehouseStock = 0;
+
+    // 8. Prepare addresses for shipping cost queries
+    const to_address = {
+        name: document.getElementById('partner-name').value,
+        street1: document.getElementById('partner-street').value,
+        city: document.getElementById('partner-city').value,
+        state: "", // Add a field for state if needed
+        zip: document.getElementById('partner-zip').value,
+        country: document.getElementById('partner-country').value,
+        email: document.getElementById('partner-email').value,
+        phone: document.getElementById('partner-phone').value
+    };
+    
+    // 9. Fetch vendor address for shipping cost calculation
+    let vendorAddress = null;
+    try {
+        const vendorResp = await fetch(`/partners/${vendorId}`);
+        if (vendorResp.ok) {
+            vendorAddress = await vendorResp.json();
+        }
+    } catch (e) {}
+
+    // 10. Fetch warehouse address for shipping cost calculation
+    let warehouseAddress = null;
+    try {
+        const warehouseResp = await fetch('/partners/warehouse');
+        if (warehouseResp.ok) {
+            warehouseAddress = await warehouseResp.json();
+        }
+    } catch (e) {}
+
+    // 11. Fetch shipping cost from vendor to customer
+    let shippingCostVendorCustomer = null;
+    if (vendorAddress) {
+        try {
+            const resp = await fetch('/shippo/rates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from_address: vendorAddress, to_address })
+            });
+            const data = await resp.json();
+            if (resp.ok && data.rates && data.rates.length) {
+                shippingCostVendorCustomer = parseFloat(data.rates[0].amount);
+            }
+        } catch (e) {}
+    }
+
+    // 12. Fetch shipping cost from warehouse to customer
+    let shippingCostWarehouseCustomer = null;
+    if (warehouseAddress) {
+        try {
+            const resp = await fetch('/shippo/rates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ from_address: warehouseAddress, to_address })
+            });
+            const data = await resp.json();
+            if (resp.ok && data.rates && data.rates.length) {
+                shippingCostWarehouseCustomer = parseFloat(data.rates[0].amount);
+            }
+        } catch (e) {}
+    }
+
+    let senderAddress = null;
+    const fulfillmentStrategy = await fetchFulfillmentStrategy(
+        itemId, vendorId, customerId, carrierId, orderedQuantity,
+        vendorAcceptsDropship, warehouseStock, vendorStock,
+        shippingCostVendorCustomer, shippingCostWarehouseCustomer
+    );
+    console.log('Fulfillment strategy:', fulfillmentStrategy);
+
+    if (fulfillmentStrategy === "dropship") {
+        senderAddress = vendorAddress;
+    } else if (fulfillmentStrategy === "warehouse") {
+        senderAddress = warehouseAddress;
+    } else {
+        document.getElementById('partner-error').textContent = 'Please select a fulfillment strategy.';
+        return;
+    }
+    // senderAddress should have fields: name, street1, city, state, zip, country, email, phone
+    try {
+        const resp = await fetch('/shippo/rates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ senderAddress, to_address })
+        });
         const data = await resp.json();
         if (resp.ok && data.rates && data.rates.length) {
             shippingOptionsDiv.style.display = 'block';
@@ -356,7 +547,7 @@ async function fetchShippingRates() {
         }
     } catch (e) {
         shippingInfoDiv.textContent = 'Error fetching shipping rates.';
-    }
+    } 
 }
 
 // shippingSelect.onchange = function() {
@@ -419,10 +610,27 @@ document.getElementById('confirm-carrier-btn').onclick = async function() {
         currentPartner = partnerData;
         currentPartner.email = partner.email;
         // 2. Create sale order
+        const quotationData = {
+            partner_id: partnerData.id,
+            code: '',
+            currency_id: null,      // Replace with actual GUI value or null
+            tax_id: null,                // Replace with actual GUI value or null
+            discount_id: null,      // Replace with actual GUI value or null
+            price_list_id: null,   // Replace with actual GUI value or null
+            split_parcel: !!document.getElementById('split-parcel').checked, // Boolean
+            pick_pack: !!document.getElementById('pick-pack').checked,       // Boolean
+            ship: document.querySelector('input[name="delivery"]:checked').value === 'ship',
+            carrier_id: selectedShippingRate && selectedShippingRate.carrier_id
+                ? selectedShippingRate.carrier_id
+                : null, // carrier_id should be an integer or null
+            notes: '', // Or from a notes field
+            priority: 0 // Or from a priority field
+        };
+        console.log(quotationData);
         const orderResp = await fetch('/quotations/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ partner_id: partnerData.id, code: '' })
+            body: JSON.stringify(quotationData)
         });
         const order = await orderResp.json();
         if (!orderResp.ok) throw new Error(order.detail || 'Failed to create quotation');
@@ -445,10 +653,38 @@ document.getElementById('confirm-carrier-btn').onclick = async function() {
                 shippingItem = await resp.json();
             }
         } catch (err) {}
+
         if (!shippingItem || !shippingItem.id) {
             document.getElementById('partner-error').textContent = 'Shipping item not found.';
             return;
         }
+
+        // 1. Create a lot for the shipping line
+        let lotId = null;
+        try {
+            // Generate a unique, human-readable lot_number
+            const now = new Date();
+            const dateStr = now.toISOString().replace(/[-:T.]/g, '').slice(0, 12); // e.g. 202407271530
+            const carrier = selectedShippingRate.provider.replace(/\s+/g, '').toUpperCase(); // e.g. DHL
+            const service = selectedShippingRate.servicelevel.replace(/\s+/g, '').toUpperCase(); // e.g. EXPRESS
+            const rand = Math.floor(Math.random() * 10000); // 4-digit random
+            const lotNumber = `SHIP-${carrier}-${service}-${dateStr}-${rand}`;
+
+            const lotResp = await fetch('/lots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    item_id: shippingItem.id,
+                    lot_number: lotNumber,
+                    notes: selectedShippingRate.object_id
+                })
+            });
+            if (lotResp.ok) {
+                const lotData = await lotResp.json();
+                lotId = lotData.id;
+            }
+        } catch (err) {}
+
         lines.push({
             quantity: 1,
             item_id: shippingItem.id,
@@ -457,7 +693,8 @@ document.getElementById('confirm-carrier-btn').onclick = async function() {
             cost: 0,
             cost_currency_id: shippingItem.cost_currency_id || shippingItem.sales_currency_id || 1,
             carrier_id: selectedShippingRate.provider,
-            servicelevel: selectedShippingRate.servicelevel
+            servicelevel: selectedShippingRate.servicelevel,
+            lot_id: lotId // link the lot to the shipping line
         });
         // 4. Update quotation lines and show PDF preview
         await updateQuotationPreview(orderId, lines);

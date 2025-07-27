@@ -1,12 +1,12 @@
 # For shipping item lookup by SKU, see /items/by-sku/{sku} in warehouse.py
-from fastapi import APIRouter, Depends, HTTPException, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, Request, Body
 import stripe
 import shippo
 import random
 from shippo.models import components
 from typing import List
 from database import get_conn
-from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest, QuotationCreate
+from models import SaleOrderCreate, OrderLineIn, CreateSessionRequest, QuotationCreate, PurchaseLabelRequest
 from auth import get_current_username
 from reportlab.lib.pagesizes import A4, A7
 from reportlab.lib import colors
@@ -42,8 +42,26 @@ def create_quotation(data: QuotationCreate):
     with get_conn() as conn:
         code = data.code.strip() or f"Q-{uuid.uuid4().hex[:8].upper()}"
         cur = conn.execute(
-            "INSERT INTO quotation (code, partner_id, status) VALUES (?, ?, 'draft')",
-            (code, data.partner_id)
+            """
+            INSERT INTO quotation (
+                code, partner_id, currency_id, tax_id, discount_id, price_list_id,
+                split_parcel, pick_pack, ship, carrier_id, notes, priority, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+            """,
+            (
+                code,
+                data.partner_id,
+                data.currency_id,
+                data.tax_id,
+                data.discount_id,
+                data.price_list_id,
+                int(data.split_parcel) if data.split_parcel is not None else 0,
+                int(data.pick_pack) if data.pick_pack is not None else 1,
+                int(data.ship) if data.ship is not None else 1,
+                data.carrier_id,
+                data.notes,
+                data.priority or 0
+            )
         )
         conn.commit()
         return {"quotation_id": cur.lastrowid, "code": code}
@@ -53,8 +71,8 @@ def add_quotation_lines(quotation_id: int, lines: List[OrderLineIn]):
     with get_conn() as conn:
         for line in lines:
             conn.execute(
-                "INSERT INTO quotation_line (quantity, item_id, quotation_id, price, currency_id, cost, cost_currency_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (line.quantity, line.item_id, quotation_id, line.price, line.currency_id, line.cost, line.cost_currency_id)
+                "INSERT INTO quotation_line (quantity, item_id, lot_id, quotation_id, price, currency_id, cost, cost_currency_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (line.quantity, line.item_id, line.lot_id, quotation_id, line.price, line.currency_id, line.cost, line.cost_currency_id)
             )
         conn.commit()
     return {"message": "Lines added"}
@@ -74,27 +92,19 @@ def get_draft_quotations(username: str = Depends(get_current_username)):
 @router.post("/quotations/{quotation_id}/confirm", tags=["Sales"])
 def confirm_quotation(quotation_id: int):  # username: str = Depends(get_current_username)
     with get_conn() as conn:
-        # Set quotation to confirmed
+        # Set quotation to confirmed (trigger will create sale order)
         conn.execute("UPDATE quotation SET status = 'confirmed' WHERE id = ?", (quotation_id,))
-        # Create sale order from quotation
-        q = conn.execute("SELECT * FROM quotation WHERE id = ?", (quotation_id,)).fetchone()
-        cur = conn.execute(
-            "INSERT INTO sale_order (code, partner_id, status, quotation_id) VALUES (?, ?, 'draft', ?)",
-            (f"SO-{uuid.uuid4().hex[:8].upper()}", q["partner_id"], quotation_id)
-        )
-        sale_order_id = cur.lastrowid
-        # Copy lines
-        lines = conn.execute("SELECT * FROM quotation_line WHERE quotation_id = ?", (quotation_id,)).fetchall()
-        for line in lines:
-            conn.execute(
-                "INSERT INTO order_line (quantity, item_id, order_id, price, currency_id, cost, cost_currency_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (line["quantity"], line["item_id"], sale_order_id, line["price"], line["currency_id"], line["cost"], line["cost_currency_id"])
-            )
         conn.commit()
-    return {"sale_order_id": sale_order_id}
+        # Fetch the sale order created by the trigger
+        sale_order = conn.execute(
+            "SELECT id FROM sale_order WHERE quotation_id = ? ORDER BY id DESC LIMIT 1",
+            (quotation_id,)
+        ).fetchone()
+        if not sale_order:
+            raise HTTPException(status_code=500, detail="Sale order not created by trigger")
+        return {"sale_order_id": sale_order["id"]}
 
 # --- SALE ORDER ENDPOINTS ---
-
 @router.post("/sale-orders/", tags=["Sales"])
 def create_sale_order(order: SaleOrderCreate):
     with get_conn() as conn:
@@ -303,8 +313,14 @@ async def stripe_webhook(request: Request):
 
 
 # Endpoint 1: Get available carriers and rates for static addresses
-@router.get("/shippo/rates", tags=["Shipping"])
-async def get_shippo_rates():
+@router.post("/shippo/rates", tags=["Shipping"])
+async def get_shippo_rates(
+    from_address: dict = Body(None),
+    to_address: dict = Body(None)
+):
+    # from_address = {"TODO": "Provide from address or use static one"}
+    print("Faking Shippo rates for addresses:", from_address, to_address)
+    # Use provided or fallback to static addresses
     address_from_data = {
         "name": "Shawn Ippotle",
         "street1": "215 Clayton St.",
@@ -315,7 +331,7 @@ async def get_shippo_rates():
         "email": "shippotle@shippo.com",
         "phone": "+1 555 341 9393"
     }
-    address_to_data = {
+    address_to_data =  {
         "name": "Mr Hippo Pippo",
         "street1": "1 Broadway",
         "city": "New York",
@@ -345,7 +361,8 @@ async def get_shippo_rates():
             async_=False
         )
     )
-    # Return all rates with carrier, service, price, currency, and object_id
+    # print(shipment.rates[0])
+    
     rates = [
         {
             "provider": r.provider,
@@ -356,11 +373,15 @@ async def get_shippo_rates():
         }
         for r in shipment.rates
     ]
+    print("rates:", rates)
     return {"rates": rates}
+
 
 # Endpoint 2: Purchase label for selected rate
 @router.post("/shippo/purchase-label", tags=["Shipping"])
-async def purchase_shippo_label(rate_id: str):
+async def purchase_shippo_label(request: PurchaseLabelRequest):
+    rate_id = request.rate_id
+    print("Purchasing label with rate_id:", rate_id)
     transaction = shippo_sdk.transactions.create(
         components.TransactionCreateRequest(
             rate=rate_id,
@@ -369,15 +390,17 @@ async def purchase_shippo_label(rate_id: str):
         )
     )
     if transaction.status == "SUCCESS":
+        print("✅ Label purchased successfully:", transaction.label_url)
         return {
             "label_url": transaction.label_url,
             "tracking_number": transaction.tracking_number,
-            "amount": transaction.amount,
-            "currency": transaction.currency,
-            "provider": transaction.provider,
-            "servicelevel": transaction.servicelevel.name
+            # "amount": transaction.amount,
+            # "currency": transaction.currency,
+            # "provider": transaction.provider,
+            # "servicelevel": transaction.servicelevel.name
         }
     else:
+        print("❌ Error purchasing label:", transaction.messages)
         return {"error": transaction.messages}
 
 async def create_shippo_address_async(address):
