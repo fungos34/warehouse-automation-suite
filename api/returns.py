@@ -37,6 +37,13 @@ def confirm_return_order(return_order_id: int, username: str = Depends(get_curre
         conn.commit()
     return {"message": "Return order confirmed"}
 
+@router.post("/return-orders/{return_order_id}/done", tags=["Returns"])
+def done_return_order(return_order_id: int, username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        conn.execute("UPDATE return_order SET status = 'done' WHERE id = ?", (return_order_id,))
+        conn.commit()
+    return {"message": "Return order marked as done"}
+
 @router.post("/return-orders/{return_order_id}/cancel", tags=["Returns"])
 def cancel_return_order(return_order_id: int, username: str = Depends(get_current_username)):
     with get_conn() as conn:
@@ -107,8 +114,8 @@ def create_return_order(data: ReturnOrderCreate):  # username: str = Depends(get
 
         code = f"RET-{uuid.uuid4().hex[:8].upper()}"
         cur = conn.execute(
-            "INSERT INTO return_order (code, origin_model, origin_id, partner_id, status) VALUES (?, ?, ?, ?, 'draft')",
-            (code, data.origin_model, origin_id, origin["partner_id"])
+            "INSERT INTO return_order (code, origin_model, origin_id, partner_id, status, ship) VALUES (?, ?, ?, ?, 'draft', ?)",
+            (code, data.origin_model, origin_id, origin["partner_id"], data.ship)
         )
         return_order_id = cur.lastrowid
 

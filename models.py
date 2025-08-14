@@ -90,6 +90,7 @@ class ReturnOrderCreate(BaseModel):
     origin_model: Literal["sale_order", "purchase_order"]
     origin_code: str
     lines: List[ReturnLineIn]
+    ship: int
 
 class CreateSessionRequest(BaseModel):
     email: str

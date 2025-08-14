@@ -3,7 +3,11 @@ let addressConfirmed = false;
 let carrierConfirmed = false;
 let pendingBuy = false;
 let pendingCart = {};
-
+// After address is entered, fetch shipping rates
+const shippingOptionsDiv = document.getElementById('shipping-options');
+const shippingSelect = document.getElementById('shipping-rate-select');
+const shippingInfoDiv = document.getElementById('shipping-rate-info');
+let selectedShippingRate = null;
 
 async function loadItems() {
     try {
@@ -81,14 +85,18 @@ document.querySelectorAll('input[name="delivery"]').forEach(el => {
             document.getElementById('split-parcel').disabled = !document.getElementById('pick-pack').checked;
         }
     };
-document.getElementById('pick-pack').onchange = function() {
-    if (document.querySelector('input[name="delivery"]:checked').value !== 'ship') {
-        document.getElementById('split-parcel').disabled = !this.checked;
-    }
-    if (document.querySelector('input[name="delivery"]:checked').value === 'ship') {
-        this.checked = true;
-    }
-};
+
+const pickPackEl = document.getElementById('pick-pack');
+if (pickPackEl) {
+    pickPackEl.onchange = function() {
+        if (document.querySelector('input[name="delivery"]:checked').value !== 'ship') {
+            document.getElementById('split-parcel').disabled = !this.checked;
+        }
+        if (document.querySelector('input[name="delivery"]:checked').value === 'ship') {
+            this.checked = true;
+        }
+    };
+}
 });
 
 
@@ -154,127 +162,6 @@ document.getElementById('partner-form').onsubmit = async function(e) {
     }
     pendingBuy = false;
     return;
-
-    try {
-        // 1. Create partner
-        const resp = await fetch('/partners', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(partner)
-        });
-        const partnerData = await resp.json();
-        if (!resp.ok) throw new Error(partnerData.detail || 'Failed to create customer');
-        currentPartner = partnerData;
-        // Ensure email is always present for Stripe checkout
-        currentPartner.email = partner.email;
-        // 2. Create sale order
-        const orderResp = await fetch('/quotations/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ partner_id: partnerData.id, code: '' })
-        });
-        const order = await orderResp.json();
-        if (!orderResp.ok) throw new Error(order.detail || 'Failed to create quotation');
-        currentOrder = order;
-        const orderId = order.quotation_id;
-
-        // 3. Add order lines
-        const lines = Object.values(pendingCart).map(item => ({
-            quantity: item.qty,
-            item_id: item.id,
-            price: item.price || 0,
-            currency_id: item.currency_id || 1,
-            cost: item.cost || 0,
-            cost_currency_id: item.cost_currency_id || item.currency_id || 1
-        }));
-
-        if (selectedShippingRate) {
-            lines.push({
-                quantity: 1,
-                item_id: 4, // or 0, or a dedicated shipping item in your DB
-                price: parseFloat(selectedShippingRate.amount),
-                currency_id: 1, // or map currency code to your currency_id
-                cost: 0,
-                cost_currency_id: 1,
-                carrier_id: selectedShippingRate.provider, // store carrier info
-                servicelevel: selectedShippingRate.servicelevel
-            });
-        }
-
-        const lineResp = await fetch(`/quotations/${orderId}/lines`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(lines)
-        });
-        if (!lineResp.ok) throw new Error('Failed to add quotation lines');
-
-        // 4. Fetch PDF and show preview BEFORE confirming
-        const pdfResp = await fetch(`/quotations/${orderId}/print`, { method: 'GET' });
-        if (pdfResp.ok) {
-            const blob = await pdfResp.blob();
-            const url = window.URL.createObjectURL(blob);
-            let previewDiv = document.getElementById('quotation-preview');
-            if (!previewDiv) {
-                previewDiv = document.createElement('div');
-                previewDiv.id = 'quotation-preview';
-                document.body.appendChild(previewDiv);
-            }
-            previewDiv.innerHTML = `
-                <iframe src="${url}" width="100%" height="400px"></iframe>
-                <button id="confirm-pay-btn">Place Order (Payment Required)</button>
-            `;
-            setTimeout(() => {
-                const btn = document.getElementById('confirm-pay-btn');
-                if (btn) {
-                    btn.onclick = async function() {
-                        // 1. Confirm the quotation
-                        const confirmResp = await fetch(`/quotations/${orderId}/confirm`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
-                        });
-                        if (!confirmResp.ok) {
-                            document.getElementById('buy-result').textContent = 'Failed to confirm quotation';
-                            return;
-                        }
-                        // 2. Proceed to payment as before
-                        if (!currentPartner.email) {
-                            document.getElementById('buy-result').textContent = 'Customer email is missing. Cannot proceed to payment.';
-                            return;
-                        }
-                        const checkoutResp = await fetch('/create-checkout-session', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                order_number: currentOrder.code,
-                                email: currentPartner.email
-                            })
-                        });
-                        const checkoutData = await checkoutResp.json();
-                        if (checkoutResp.ok && checkoutData.checkout_url) {
-                            window.location.href = checkoutData.checkout_url; // Redirect to Stripe Checkout
-                        } else {
-                            document.getElementById('buy-result').textContent = checkoutData.detail || 'Failed to start payment';
-                        }
-                        // Optionally close overlay here if you want
-                        // document.getElementById('customer-form').style.display = 'none';
-                        // document.getElementById('customer-form-overlay').style.display = 'none';
-                        // Reset cart and hide form
-                        cart = {};
-                        renderCart();
-                        loadItems();
-                        document.getElementById('customer-form').style.display = 'none';
-                        document.getElementById('customer-form-overlay').style.display = 'none';
-                        pendingBuy = false;
-                        pendingCart = {};
-                        currentOrder = null;
-                        currentPartner = null;
-                    };
-                }
-            }, 0);
-        }
-    } catch (e) {
-        document.getElementById('partner-error').textContent = e.message || 'Error placing order';
-    }
 };
 
 document.getElementById('partner-cancel-btn').onclick = function() {
@@ -315,19 +202,33 @@ async function fetchFulfillmentStrategy(itemId, vendorId, customerId, carrierId,
     if (carrierId !== undefined && carrierId !== null && carrierId !== "undefined") {
         params.append('carrier_id', carrierId);
     }
-    if (shippingCostVendorCustomer != null) params.append('shipping_cost_vendor_customer', shippingCostVendorCustomer);
-    if (shippingCostWarehouseCustomer != null) params.append('shipping_cost_warehouse_customer', shippingCostWarehouseCustomer);
+    if (shippingCostVendorCustomer != null && shippingCostWarehouseCustomer != null) {
+        params.append('shipping_cost_vendor_customer', shippingCostVendorCustomer);
+        params.append('shipping_cost_warehouse_customer', shippingCostWarehouseCustomer);
+    }
     const resp = await fetch(`/dropshipping-decision?${params.toString()}`);
     if (!resp.ok) throw new Error('Could not fetch fulfillment strategy');
     const data = await resp.json();
     return data.answer; // "dropship", "warehouse", or "auto"
 }
 
-// After address is entered, fetch shipping rates
-const shippingOptionsDiv = document.getElementById('shipping-options');
-const shippingSelect = document.getElementById('shipping-rate-select');
-const shippingInfoDiv = document.getElementById('shipping-rate-info');
-let selectedShippingRate = null;
+async function fetchSplitParcelDecision(params) {
+    // params: { number_of_items, number_of_lines, cumulative_weight, cumulative_volume, cumulative_length, cumulative_width, cumulative_height, cumulative_value, contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id, parcel_split_allowed }
+    const query = new URLSearchParams(params);
+    const resp = await fetch(`/split-parcel-question?${query.toString()}`);
+    if (!resp.ok) throw new Error('Could not fetch split parcel decision');
+    const data = await resp.json();
+    return data.answer; // e.g. "dont_split", "by_volume_LBH/5000", etc.
+}
+
+async function fetchPackingCartonDecision(params) {
+    // params: { cumulative_length, cumulative_width, cumulative_height, cumulative_volume, cumulative_weight, cumulative_value, contains_hazardous, contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id, temperature_control, fragile, insurance_required }
+    const query = new URLSearchParams(params);
+    const resp = await fetch(`/packing-question?${query.toString()}`);
+    if (!resp.ok) throw new Error('Could not fetch packing carton decision');
+    const data = await resp.json();
+    return data.answer; // item_id of the chosen carton
+}
 
 async function fetchShippingRates() {
     // 1. Get the first item in the cart (assume single-item for simplicity)
@@ -339,6 +240,13 @@ async function fetchShippingRates() {
     const itemId = firstCartItem.id;
     const orderedQuantity = firstCartItem.qty;
 
+    // Show loading spinner and message
+    document.getElementById('shipping-loading').style.display = 'block';
+    shippingOptionsDiv.style.display = 'none';
+    shippingInfoDiv.textContent = '';
+
+    const COMPANY_OWNER_PARTNER_ID = 5; // <-- Set this to your actual owner partner id
+
     // 2. Fetch vendor_id for the item
     let vendorId = null;
     try {
@@ -349,8 +257,8 @@ async function fetchShippingRates() {
         }
     } catch (e) {}
     if (!vendorId) {
-        shippingInfoDiv.textContent = 'Could not determine vendor for item.';
-        return;
+        vendorId = COMPANY_OWNER_PARTNER_ID;
+        shippingInfoDiv.textContent = 'Vendor not found, using company owner as vendor for shipping.';
     }
 
     // 3. Ensure customer exists and get customerId

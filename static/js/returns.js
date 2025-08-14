@@ -37,16 +37,29 @@ async function startReturnOrderByCode(originModel, code = null) {
     // 3. Build a simple form for return quantities
     let formHtml = `<form id="return-lines-form"><h4>Return Items for ${code}</h4>`;
     lines.forEach((line, idx) => {
-        const lotInfo = line.lot_id ? ` (Lot: ${line.lot_id})` : '';
+        // Use line.item_name and line.lot_name if available, otherwise fallback
+        const itemName = line.item_name || `Item ${line.item_id}`;
+        const lotInfo = line.lot_name ? ` (Lot: ${line.lot_name})` : (line.lot_id ? ` (Lot: ${line.lot_id})` : '');
         formHtml += `
         <div>
         <label>
-            ${line.item_id}${lotInfo} - Max: ${line.quantity}
+            ${itemName}${lotInfo} - Max: ${line.quantity}
             <input type="number" min="0" max="${line.quantity}" value="0" name="qty${idx}">
+            <input type="text" name="reason${idx}" placeholder="Reason for return">
         </label>
         </div>
     `;
     });
+    formHtml += `
+        <div>
+            <label>
+                <input type="radio" name="return_mode" value="parcel" checked> Ship items in a parcel
+            </label>
+            <label>
+                <input type="radio" name="return_mode" value="individual"> Return items individually
+            </label>
+        </div>
+    `;
     formHtml += `<button type="submit">Submit Return</button></form>`;
 
     // Show modal
@@ -63,7 +76,7 @@ async function startReturnOrderByCode(originModel, code = null) {
     modal.innerHTML = formHtml;
     document.body.appendChild(modal);
 
-    modal.querySelector('form').onsubmit = async function(e) {
+    modal.querySelector('#return-lines-form').onsubmit = async function(e) {
         e.preventDefault();
         const returnLines = [];
         lines.forEach((line, idx) => {
@@ -73,8 +86,8 @@ async function startReturnOrderByCode(originModel, code = null) {
                     item_id: line.item_id,
                     lot_id: line.lot_id || null,
                     quantity: 1,
-                    reason: '',
-                    price: line.price // <-- add this if your backend supports it
+                    reason: this[`reason${idx}`].value || '',
+                    price: line.price
                 });
             }
         });
@@ -82,6 +95,7 @@ async function startReturnOrderByCode(originModel, code = null) {
             alert('No items selected for return.');
             return;
         }
+        const ship = this.return_mode.value === 'parcel' ? 1 : 0;
         // 4. Submit return order
         const resp = await fetch('/return-orders/', {
             method: 'POST',
@@ -89,7 +103,8 @@ async function startReturnOrderByCode(originModel, code = null) {
             body: JSON.stringify({
                 origin_model: originModel,
                 origin_code: code,
-                lines: returnLines
+                lines: returnLines,
+                ship: ship
             })
         });
         const data = await resp.json();
@@ -97,8 +112,9 @@ async function startReturnOrderByCode(originModel, code = null) {
             alert('Return order created!');
             document.body.removeChild(modal);
         } else {
-            alert(JSON.stringify(data.detail) || 'Error creating return order');
+            alert(`Error creating return order: ${JSON.stringify(data.detail)}` || 'Unknown error');
         }
+        console.log('Return order response:', data);
     };
 }
 
@@ -115,6 +131,7 @@ async function loadReturnOrders() {
     <li>
         <b>${o.code}</b>: ${o.origin_model} ${o.origin_id} (${o.status}) - ${o.partner_name}
         <button onclick="confirmReturnOrder(${o.id})">Confirm</button>
+        <button onclick="doneReturnOrder(${o.id})">Set Done</button>
         <button onclick="cancelReturnOrder(${o.id})">Cancel</button>
         <button onclick="downloadReturnOrder(${o.id})">Print PDF</button>
         <button onclick="downloadReturnLabel(${o.id}, '${o.code}')">Print Label</button>
@@ -144,6 +161,10 @@ async function loadCustomerReturnOrders() {
 
 window.confirmReturnOrder = async function(id) {
     await fetch(`/return-orders/${id}/confirm`, { method: 'POST', headers: { Authorization: 'Bearer ' + jwtToken } });
+    loadReturnOrders();
+};
+window.doneReturnOrder = async function(id) {
+    await fetch(`/return-orders/${id}/done`, { method: 'POST', headers: { Authorization: 'Bearer ' + jwtToken } });
     loadReturnOrders();
 };
 window.cancelReturnOrder = async function(id) {
@@ -207,13 +228,19 @@ document.addEventListener("DOMContentLoaded", async function() {
         detailsDiv.innerHTML = `<span style="color:red">Could not load order: ${e.message}</span>`;
     }}
 
-    document.getElementById('download-bill-btn').onclick = function() {
-        window.open(`/sale-orders/${orderId}/print-order`, '_blank');
+    const billBtn = document.getElementById('download-bill-btn');
+    if (billBtn) {
+        billBtn.onclick = function() {
+            window.open(`/sale-orders/${orderId}/print-order`, '_blank');
+        };
     };
 
-    document.getElementById('create-return-btn').onclick = async function() {
-        startReturnOrderByCode('sale_order', orderNumber);
-    };
+    const createReturnBtn = document.getElementById('create-return-btn');
+    if (createReturnBtn) {
+        createReturnBtn.onclick = async function() {
+            startReturnOrderByCode('sale_order', orderNumber);
+        };
+    }
 });
 
 // Example: Call Shippo address creation endpoint and show result

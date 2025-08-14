@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS item (
     sku TEXT UNIQUE NOT NULL,
     barcode TEXT UNIQUE NOT NULL,
     size TEXT CHECK (size IN ('small','big')),
+    length REAL,                -- length in cm
+    width REAL,                 -- width in cm  
+    height REAL,                -- height in cm
+    weight REAL,                -- weight in grams
+    volume REAL,                -- volume in cm³
     description TEXT,
     route_id INTEGER,
     vendor_id INTEGER,
@@ -693,6 +698,102 @@ CREATE TABLE IF NOT EXISTS debug_log (
 );
 
 
+CREATE TABLE IF NOT EXISTS packing_policy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action INTEGER NOT NULL,                -- Reference to carton/box type (item_id)
+    min_cumulative_length REAL,
+    max_cumulative_length REAL,
+    min_cumulative_width REAL,
+    max_cumulative_width REAL,
+    min_cumulative_height REAL,
+    max_cumulative_height REAL,
+    min_cumulative_volume REAL,
+    max_cumulative_volume REAL,
+    min_cumulative_weight REAL,
+    max_cumulative_weight REAL,
+    min_cumulative_value REAL,
+    max_cumulative_value REAL,
+    contains_hazardous_type TEXT CHECK(contains_hazardous_type IN ('explosive', 'flammable', 'toxic', 'corrosive', 'radioactive', 'other')),
+    carrier_id INTEGER,
+    shipping_method TEXT,
+    recipient_id INTEGER,
+    sender_id INTEGER,
+    temperature_control BOOLEAN,
+    fragile BOOLEAN,
+    insurance_required BOOLEAN,
+    priority INTEGER DEFAULT 0,
+    active BOOLEAN DEFAULT 1,
+    notes TEXT,
+    FOREIGN KEY(action) REFERENCES item(id), -- Reference to the carton/box type
+    FOREIGN KEY(carrier_id) REFERENCES partner(id),
+    FOREIGN KEY(recipient_id) REFERENCES partner(id),
+    FOREIGN KEY(sender_id) REFERENCES partner(id)
+);
+
+
+CREATE TABLE IF NOT EXISTS packing_question (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cumulative_length REAL,               -- Total length of items in source document
+    cumulative_width REAL,                -- Total width of items in source document
+    cumulative_height REAL,               -- Total height of items in source document
+    cumulative_volume REAL,               -- Total volume of items in source document
+    cumulative_weight REAL,               -- Total weight of items in source document
+    cumulative_value REAL,                -- Total value of items in source document
+    contains_hazardous BOOLEAN, -- Whether any item is hazardous
+    contains_hazardous_type TEXT CHECK(contains_hazardous_type IN ('explosive', 'flammable', 'toxic', 'corrosive', 'radioactive', 'other')),                  -- Type of hazardous material (if applicable)
+    carrier_id INTEGER,         -- Preferred carrier for this parcel
+    shipping_method TEXT,       -- Preferred shipping method for this parcel
+    recipient_id INTEGER,                 -- Preferred recipient for this parcel
+    sender_id INTEGER,                    -- Preferred sender for this parcel
+    temperature_control BOOLEAN,
+    fragile BOOLEAN,
+    insurance_required BOOLEAN,
+    answer INTEGER,                          -- Will be set by the trigger
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY(carrier_id) REFERENCES partner(id),
+    FOREIGN KEY(recipient_id) REFERENCES partner(id),
+    FOREIGN KEY(sender_id) REFERENCES partner(id)
+);
+
+
+DROP TRIGGER IF EXISTS trg_packing_answer;
+CREATE TRIGGER trg_packing_answer
+AFTER INSERT ON packing_question
+BEGIN
+    UPDATE packing_question
+    SET answer = (
+        SELECT action
+        FROM packing_policy
+        WHERE
+            (min_cumulative_length IS NULL OR cumulative_length >= min_cumulative_length)
+            AND (max_cumulative_length IS NULL OR cumulative_length <= max_cumulative_length)
+            AND (min_cumulative_width IS NULL OR cumulative_width >= min_cumulative_width)
+            AND (max_cumulative_width IS NULL OR cumulative_width <= max_cumulative_width)
+            AND (min_cumulative_height IS NULL OR cumulative_height >= min_cumulative_height)
+            AND (max_cumulative_height IS NULL OR cumulative_height <= max_cumulative_height)
+            AND (min_cumulative_volume IS NULL OR cumulative_volume >= min_cumulative_volume)
+            AND (max_cumulative_volume IS NULL OR cumulative_volume <= max_cumulative_volume)
+            AND (min_cumulative_weight IS NULL OR cumulative_weight >= min_cumulative_weight)
+            AND (max_cumulative_weight IS NULL OR cumulative_weight <= max_cumulative_weight)
+            AND (min_cumulative_value IS NULL OR cumulative_value >= min_cumulative_value)
+            AND (max_cumulative_value IS NULL OR cumulative_value <= max_cumulative_value)
+            AND (contains_hazardous_type IS NULL OR contains_hazardous_type = packing_question.contains_hazardous_type)
+            AND (carrier_id IS NULL OR carrier_id = packing_question.carrier_id)
+            AND (shipping_method IS NULL OR shipping_method = packing_question.shipping_method)
+            AND (recipient_id IS NULL OR recipient_id = packing_question.recipient_id)
+            AND (sender_id IS NULL OR sender_id = packing_question.sender_id)
+            AND (temperature_control IS NULL OR temperature_control = packing_question.temperature_control)
+            AND (fragile IS NULL OR fragile = fragile)
+            AND (insurance_required IS NULL OR insurance_required = insurance_required)
+            AND active = 1
+        ORDER BY priority DESC, id DESC
+        LIMIT 1
+    )
+    WHERE id = NEW.id;
+END;
+
+
 CREATE TABLE IF NOT EXISTS dropshipping_policy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id INTEGER DEFAULT NULL,                       -- NULL = applies to all items
@@ -753,6 +854,7 @@ BEGIN
             AND (warehouse_stock_threshold IS NULL OR NEW.warehouse_stock <= warehouse_stock_threshold)
             AND (vendor_stock_threshold IS NULL OR NEW.vendor_stock >= vendor_stock_threshold)
             -- Remove or add shipping cost logic here if you add a column for it
+            AND (vendor_shipping_cost_lower IS NULL OR vendor_shipping_cost_lower = shipping_cost_vendor_customer < shipping_cost_warehouse_customer)
             AND active = 1
         ORDER BY priority DESC, id DESC
         LIMIT 1
@@ -953,8 +1055,8 @@ BEGIN
     INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
     SELECT
         'Return Parcel ' || NEW.code,
-        'RET-PKG-' || NEW.code,
-        'RET-PKG-' || NEW.code,
+        'PKG-' || NEW.code,
+        'PKG-' || NEW.code,
         'Auto-generated return parcel for RO ' || NEW.code,
         0, 1, 1, 0
     WHERE NEW.ship = 1;
@@ -967,12 +1069,12 @@ BEGIN
     -- Link BOM to parcel item
     UPDATE item
     SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for return parcel ' || NEW.code)
-    WHERE sku = 'RET-PKG-' || NEW.code;
+    WHERE sku = 'PKG-' || NEW.code;
 
     -- Add BOM lines for each valid return line (exclude digital and non-sellable items)
     INSERT INTO bom_line (bom_id, item_id, lot_id, quantity)
     SELECT
-        (SELECT bom_id FROM item WHERE sku = 'RET-PKG-' || NEW.code),
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code),
         rl.item_id,
         rl.lot_id,
         rl.quantity
@@ -988,9 +1090,9 @@ BEGIN
         code, partner_id, item_id, quantity, status, unbuild_location_id, origin, origin_model, origin_id, trigger_id, priority
     )
     SELECT
-        'UO_RET_' || NEW.code,
+        'UO_' || NEW.code,
         NEW.partner_id,
-        (SELECT id FROM item WHERE sku = 'RET-PKG-' || NEW.code),
+        (SELECT id FROM item WHERE sku = 'PKG-' || NEW.code),
         1,
         'draft',
         (SELECT l.id FROM location l JOIN location_zone lz ON l.id = lz.location_id JOIN zone z ON lz.zone_id = z.id WHERE z.code = 'ZON01' LIMIT 1),
@@ -1004,7 +1106,7 @@ BEGIN
     -- Immediately confirm the unbuild order
     UPDATE unbuild_order
     SET status = 'confirmed'
-    WHERE code = 'UO_RET_' || NEW.code
+    WHERE code = 'UO_' || NEW.code
       AND status = 'draft'
       AND origin = 'Auto-created for RO ' || NEW.code;
 
@@ -1026,7 +1128,7 @@ BEGIN
         'return_order',
         NEW.id,
         'demand',
-        (SELECT id FROM route WHERE name = 'Unpacking Supply'),
+        (SELECT id FROM route WHERE name = 'Return Route'),
         rl.item_id,
         (SELECT id FROM zone WHERE code = 'ZON01'), -- Input Zone
         rl.quantity,
@@ -1036,7 +1138,7 @@ BEGIN
         NEW.priority
     FROM return_line rl
     WHERE rl.return_order_id = NEW.id
-      AND NEW.ship = 1;
+      AND NEW.ship = 0;
 END;
 
 
@@ -1451,191 +1553,51 @@ BEGIN
 END;
 
 
-DROP TRIGGER IF EXISTS trg_sale_order_confirmed_create_parcel_items;
-CREATE TRIGGER trg_sale_order_confirmed_create_parcel_items
+DROP TRIGGER IF EXISTS trg_sale_order_confirmed_create_packing_question;
+CREATE TRIGGER trg_sale_order_confirmed_create_packing_question
 AFTER UPDATE OF status ON sale_order
 WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
 BEGIN
-    -- Only proceed if ship=1 in the linked quotation
-    -- 1. Get the quotation values
-    INSERT INTO debug_log (event, info)
-    SELECT 'sale_order_confirmed_create_parcel_items', 'Evaluating SO ' || NEW.code || ' for parcel creation (ship=' || q.ship || ', split_parcel=' || q.split_parcel || ')'
-    FROM quotation q WHERE q.id = NEW.quotation_id;
-
-    -- 2. If ship=1, create parcel item(s)
-    -- (a) If split_parcel=1, split lines by stock availability
-    -- (b) Otherwise, create one parcel item for all non-digital lines
-
-    -- 2a. Create a parcel item for in-stock lines (if split_parcel=1)
-    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
+    -- Only if shipping is enabled in the linked quotation
+    INSERT INTO packing_question (
+        cumulative_length,
+        cumulative_width,
+        cumulative_height,
+        cumulative_volume,
+        cumulative_weight,
+        cumulative_value,
+        contains_hazardous,
+        contains_hazardous_type,
+        carrier_id,
+        shipping_method,
+        recipient_id,
+        sender_id,
+        temperature_control,
+        fragile,
+        insurance_required
+    )
     SELECT
-        'Parcel ' || NEW.code || '-A',
-        'PKG-' || NEW.code || '-A',
-        'PKG-' || NEW.code || '-A',
-        'Auto-generated parcel for in-stock items from SO ' || NEW.code,
-        0, 1, 1, 0
-    FROM quotation q
-    WHERE q.id = NEW.quotation_id AND q.ship = 1 AND q.split_parcel = 1
-      AND EXISTS (
-        SELECT 1 FROM order_line ol
-        JOIN stock s ON s.item_id = ol.item_id
-        WHERE ol.order_id = NEW.id
-          AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-          AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
-      );
-
-    -- 2b. Create a parcel item for out-of-stock lines (if split_parcel=1)
-    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
-    SELECT
-        'Parcel ' || NEW.code || '-B',
-        'PKG-' || NEW.code || '-B',
-        'PKG-' || NEW.code || '-B',
-        'Auto-generated parcel for out-of-stock items from SO ' || NEW.code,
-        0, 1, 1, 0
-    FROM quotation q
-    WHERE q.id = NEW.quotation_id AND q.ship = 1 AND q.split_parcel = 1
-      AND EXISTS (
-        SELECT 1 FROM order_line ol
-        WHERE ol.order_id = NEW.id
-          AND (
-            ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-            OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
-          )
-      );
-
-    -- 2c. If split_parcel=0 or all/none in stock, create a single parcel item
-    INSERT INTO item (name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital)
-    SELECT
-        'Parcel ' || NEW.code,
-        'PKG-' || NEW.code,
-        'PKG-' || NEW.code,
-        'Auto-generated parcel for SO ' || NEW.code,
-        0, 1, 1, 0
-    FROM quotation q
-    WHERE q.id = NEW.quotation_id AND q.ship = 1
-      AND (
-        q.split_parcel = 0
-        OR NOT EXISTS (
-            SELECT 1 FROM order_line ol
-            WHERE ol.order_id = NEW.id
-              AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-              AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
-        )
-        OR NOT EXISTS (
-            SELECT 1 FROM order_line ol
-            WHERE ol.order_id = NEW.id
-              AND (
-                ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-                OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
-              )
-        )
-      );
-
-    -- 3. Create BOM(s) for the parcel item(s)
-    -- For in-stock parcel
-    INSERT INTO bom (instructions)
-    SELECT 'Auto-generated BOM for in-stock parcel ' || NEW.code
-    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-A');
-
-    -- For out-of-stock parcel
-    INSERT INTO bom (instructions)
-    SELECT 'Auto-generated BOM for out-of-stock parcel ' || NEW.code
-    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-B');
-
-    -- For single parcel
-    INSERT INTO bom (instructions)
-    SELECT 'Auto-generated BOM for parcel ' || NEW.code
-    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code);
-
-    -- 4. Link BOM(s) to parcel item(s)
-    UPDATE item
-    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for in-stock parcel ' || NEW.code)
-    WHERE sku = 'PKG-' || NEW.code || '-A';
-
-    UPDATE item
-    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for out-of-stock parcel ' || NEW.code)
-    WHERE sku = 'PKG-' || NEW.code || '-B';
-
-    UPDATE item
-    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for parcel ' || NEW.code)
-    WHERE sku = 'PKG-' || NEW.code;
-
-    -- 5. Add BOM lines for each parcel item
-    -- In-stock parcel
-    INSERT INTO bom_line (bom_id, item_id, quantity)
-    SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code || '-A'),
-        ol.item_id,
-        ol.quantity
+        SUM(i.length * ol.quantity),    -- cumulative_length
+        SUM(i.width * ol.quantity),     -- cumulative_width
+        SUM(i.height * ol.quantity),    -- cumulative_height
+        SUM(i.volume * ol.quantity),    -- cumulative_volume
+        SUM(i.weight * ol.quantity),    -- cumulative_weight
+        SUM(ol.price * ol.quantity),    -- cumulative_value
+        0,                             -- contains_hazardous (set to 0 or aggregate if needed)
+        NULL,                          -- contains_hazardous_type (set to NULL or aggregate if needed)
+        q.carrier_id,                  -- carrier_id
+        q.pick_pack,                   -- shipping_method
+        q.partner_id,                  -- recipient_id
+        NULL,                          -- sender_id (set to NULL or fill as needed)
+        0,                             -- temperature_control
+        0,                             -- fragile
+        0                              -- insurance_required
     FROM order_line ol
-    WHERE ol.order_id = NEW.id
-      AND ol.quantity <= (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-      AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
-      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-A');
+    JOIN item i ON i.id = ol.item_id
+    JOIN quotation q ON q.id = NEW.quotation_id
+    WHERE ol.order_id = NEW.id AND q.ship = 1;
 
-    -- Out-of-stock parcel
-    INSERT INTO bom_line (bom_id, item_id, quantity)
-    SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code || '-B'),
-        ol.item_id,
-        ol.quantity
-    FROM order_line ol
-    WHERE ol.order_id = NEW.id
-      AND (
-        ol.quantity > (SELECT IFNULL(SUM(s.quantity - s.reserved_quantity), 0) FROM stock s WHERE s.item_id = ol.item_id)
-        OR (SELECT is_digital FROM item WHERE id = ol.item_id) = 1
-      )
-      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code || '-B');
-
-    -- Single parcel
-    INSERT INTO bom_line (bom_id, item_id, quantity)
-    SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.code),
-        ol.item_id,
-        ol.quantity
-    FROM order_line ol
-    WHERE ol.order_id = NEW.id
-      AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
-      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.code);
-
-    -- 6. (Optional) Insert order lines for the parcel item(s) if you want to track them in the sale order
-    -- (You may want to remove the original order lines or keep them for reference)
-
-
-
-    -- 1. If ship=1, create and confirm unbuild_order(s) for each parcel item at customer location
-    -- INSERT INTO unbuild_order (
-    --     code, partner_id, item_id, quantity, status, unbuild_location_id, origin, trigger_id, priority
-    -- )
-    -- SELECT
-    --     'UO_' || NEW.code || '_' || i.sku,
-    --     NEW.partner_id,
-    --     i.id,
-    --     1,
-    --     'draft',
-    --     (SELECT l.id FROM location l WHERE l.partner_id = NEW.partner_id LIMIT 1),
-    --     'Auto-created for SO ' || NEW.code,
-    --     NULL,
-    --     NEW.priority
-    -- FROM item i
-    -- JOIN quotation q ON q.id = NEW.quotation_id
-    -- WHERE q.ship = 1
-    --   AND (
-    --     -- Single parcel
-    --     i.sku = 'PKG-' || NEW.code
-    --     -- Split parcels
-    --     OR i.sku = 'PKG-' || NEW.code || '-A'
-    --     OR i.sku = 'PKG-' || NEW.code || '-B'
-    --   )
-    --   AND EXISTS (SELECT 1 FROM order_line ol WHERE ol.order_id = NEW.id AND ol.item_id = i.id);
-
-    -- -- 2. Immediately confirm all unbuild_orders just created for this sale order
-    -- UPDATE unbuild_order
-    -- SET status = 'confirmed'
-    -- WHERE origin = 'Auto-created for SO ' || NEW.code
-    --   AND status = 'draft';
-
-    -- 3. If ship=0, create demand triggers for each order line (as before)
+    -- Only create demand triggers for each order line if ship=0 in the linked quotation
     INSERT INTO trigger (
         origin_model,
         origin_id,
@@ -1674,6 +1636,67 @@ BEGIN
 
 END;
 
+
+
+DROP TRIGGER IF EXISTS trg_packing_answer_create_parcel_item;
+CREATE TRIGGER trg_packing_answer_create_parcel_item
+AFTER UPDATE OF answer ON packing_question
+WHEN NEW.answer IS NOT NULL
+BEGIN
+    -- Calculate total weight: carton + sum of all order line items (weight * quantity)
+    INSERT INTO item (
+        name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital,
+        length, width, height, volume, weight
+    )
+    SELECT
+        'Parcel SO-' || (SELECT code FROM sale_order WHERE id = (SELECT quotation_id FROM sale_order WHERE code = (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1))),
+        'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
+        'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
+        'Auto-generated parcel for SO ' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
+        0, 1, 1, 0,
+        carton.length,
+        carton.width,
+        carton.height,
+        carton.volume,
+        carton.weight + (
+            SELECT IFNULL(SUM(i.weight * ol.quantity), 0)
+            FROM order_line ol
+            JOIN item i ON i.id = ol.item_id
+            WHERE ol.order_id = (SELECT id FROM sale_order ORDER BY id DESC LIMIT 1)
+              AND i.is_digital = 0
+        )
+    FROM item carton
+    WHERE carton.id = NEW.answer AND carton.name IS NOT NULL;
+
+    -- Create BOM for the parcel item
+    INSERT INTO bom (instructions)
+    SELECT 'Auto-generated BOM for parcel SO-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+
+    -- Link BOM to parcel item
+    UPDATE item
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for parcel SO-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1))
+    WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1);
+
+    -- Add BOM lines for each order line
+    INSERT INTO bom_line (bom_id, item_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)),
+        ol.item_id,
+        ol.quantity
+    FROM order_line ol
+    WHERE ol.order_id = (SELECT id FROM sale_order ORDER BY id DESC LIMIT 1)
+    AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
+    AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+
+    -- Add BOM line for the carton itself (consumed in MO)
+    INSERT INTO bom_line (bom_id, item_id, quantity)
+    SELECT
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)),
+        NEW.answer, -- carton item_id
+        1
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+END;
 
 DROP TRIGGER IF EXISTS trg_create_unbuild_order_on_parcel_item;
 CREATE TRIGGER trg_create_unbuild_order_on_parcel_item
@@ -3358,7 +3381,11 @@ INSERT INTO partner (
     'owner@example.com', '111222333', 'employee'),
 ('Employee E', 'Employee St 3', 'Employee City', 'CountryX', '4000',
     'Employee Billing St 3', 'Employee Billing City', 'CountryX', '4001',
-    'e@example.com', '444555666', 'employee');
+    'e@example.com', '444555666', 'employee'),
+('Carton Supplier', 'Carton St 10', 'Carton City', 'CountryX', '1010',
+    'Carton Billing St 10', 'Carton Billing City', 'CountryX', '1011',
+    'carton.supplier@example.com', '333444555', 'vendor');
+
 
 -- Companies
 INSERT INTO company (partner_id, name) VALUES
@@ -3375,24 +3402,53 @@ INSERT INTO warehouse (name, company_id) VALUES
 -- Items with each having its own vendor
 INSERT INTO item (
     name, sku, barcode, size, description, route_id, vendor_id,
-    cost, cost_currency_id, purchase_price, purchase_currency_id
+    cost, cost_currency_id, purchase_price, purchase_currency_id,
+    length, width, height, weight, volume
 ) VALUES
 ('Item Small A', 'SKU001', 'BAR001', 'small', 'Small item A', NULL, (SELECT id FROM partner WHERE name = 'Supplier A'),
-    7.00, (SELECT id FROM currency WHERE code='EUR'), 7.50, (SELECT id FROM currency WHERE code='EUR')),
+    7.00, (SELECT id FROM currency WHERE code='EUR'), 7.50, (SELECT id FROM currency WHERE code='EUR'),
+    12, 10, 10, 200, 1200
+),
 ('Item Big B', 'SKU002', 'BAR002', 'big', 'Big item B', NULL, (SELECT id FROM partner WHERE name = 'Supplier B'),
-    15.00, (SELECT id FROM currency WHERE code='EUR'), 16.00, (SELECT id FROM currency WHERE code='EUR'));
+    15.00, (SELECT id FROM currency WHERE code='EUR'), 16.00, (SELECT id FROM currency WHERE code='EUR'),
+    40, 20, 10, 1200, 8000
+);
 
 -- Seed a new item that is a kit/product with a BOM
 INSERT INTO item (
     name, sku, barcode, size, description, route_id, vendor_id,
-    cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id, is_assemblable, is_disassemblable
+    cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id, is_assemblable, is_disassemblable,
+    length, width, height, weight, volume
 ) VALUES (
     'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big', 'Kit consisting of Small A and Big B', NULL, NULL,
-    20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1
+    20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1,
+    40, 20, 20, 2600, 17200
 );
+
 -- Add a shipping fee item
-INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable) VALUES 
-('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0);
+INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable, length, width, height, weight, volume) VALUES 
+('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
+
+-- Small Carton
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
+) VALUES (
+    'Carton Small', 'CARTON-S', 'CARTON-S-BC', 'product', 'small', 30, 20, 15, 350, 9000, 'Small shipping carton (30x20x15 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
+);
+
+-- Medium Carton
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
+) VALUES (
+    'Carton Medium', 'CARTON-M', 'CARTON-M-BC', 'product', 'big', 50, 30, 25, 600, 37500, 'Medium shipping carton (50x30x25 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
+);
+
+-- Large Carton
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
+) VALUES (
+    'Carton Large', 'CARTON-L', 'CARTON-L-BC', 'product', 'big', 80, 40, 40, 1200, 128000, 'Large shipping carton (80x40x40 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
+);
 
 -- Create a BOM for Kit Alpha
 INSERT INTO bom (file, instructions) VALUES (NULL, 'Assemble 1x Small A and 2x Big B into Kit Alpha');
@@ -3444,6 +3500,14 @@ SELECT i.id, l.id, (SELECT id FROM lot WHERE item_id=i.id), 1000, 0, 100
 FROM item i
 JOIN partner p ON i.vendor_id = p.id AND p.partner_type = 'vendor'
 JOIN location l ON l.partner_id = p.id;
+
+
+-- Seed stock for cartons in Overstock Zone (ZON06)
+INSERT INTO stock (item_id, location_id, quantity, reserved_quantity, target_quantity)
+VALUES
+    ((SELECT id FROM item WHERE sku = 'CARTON-S'), (SELECT id FROM location WHERE code = 'LOC_P6_L1'), 50, 0, 100),
+    ((SELECT id FROM item WHERE sku = 'CARTON-M'), (SELECT id FROM location WHERE code = 'LOC_P7_L2'), 60, 0, 100),
+    ((SELECT id FROM item WHERE sku = 'CARTON-L'), (SELECT id FROM location WHERE code = 'LOC_P7_L1'), 100, 0, 100);
 
 
 -- Routes (set active=1 for all initial routes)
@@ -3532,3 +3596,55 @@ INSERT INTO dropshipping_policy (
 ) VALUES 
     (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'warehouse', 0, 1),
     (1,    NULL, NULL, NULL, NULL, NULL, 20, NULL, NULL, NULL, 'dropship',  0, 1);
+
+
+-- Small carton
+INSERT INTO packing_policy (
+    action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
+    min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
+    min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
+    contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
+    temperature_control, fragile, insurance_required, priority, active, notes
+) VALUES (
+    (SELECT id FROM item WHERE sku = 'CARTON-S'),
+    NULL, 30, NULL, 20,
+    NULL, 15, NULL, 9000,
+    NULL, 350, NULL, NULL,
+    NULL, NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL,
+    10, 1, 'Use small carton if dimensions and weight fit'
+);
+
+-- Medium carton
+INSERT INTO packing_policy (
+    action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
+    min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
+    min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
+    contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
+    temperature_control, fragile, insurance_required, priority, active, notes
+) VALUES (
+    (SELECT id FROM item WHERE sku = 'CARTON-M'),
+    31, 50, 21, 30,
+    16, 25, 9001, 37500,
+    351, 600, NULL, NULL,
+    NULL, NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL,
+    5, 1, 'Use medium carton if dimensions and weight fit'
+);
+
+-- Large carton (fallback)
+INSERT INTO packing_policy (
+    action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
+    min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
+    min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
+    contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
+    temperature_control, fragile, insurance_required, priority, active, notes
+) VALUES (
+    (SELECT id FROM item WHERE sku = 'CARTON-L'),
+    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL,
+    0, 1, 'Fallback: use largest carton'
+);

@@ -415,6 +415,17 @@ async def create_shippo_address_async(address):
         phone=address["phone"]
     )
 
+def extract_shipping_lot_code(lot_code):
+    if lot_code and lot_code.startswith("SHIP-"):
+        # Remove "SHIP-" prefix and split by "-"
+        parts = lot_code[5:].split("-")
+        # Remove the last two parts (date and random number)
+        if len(parts) > 2:
+            return "-".join(parts[:-2])
+        else:
+            return lot_code[5:]
+    return lot_code or ""
+
 @router.get("/sale-orders/{order_id}/print-order", tags=["Documents"])
 def sale_order_pdf(order_id: int):
     from reportlab.lib.pagesizes import A4
@@ -452,7 +463,7 @@ def sale_order_pdf(order_id: int):
             JOIN return_line rl ON rl.return_order_id = ro.id
             JOIN item i ON rl.item_id = i.id
             LEFT JOIN lot l ON rl.lot_id = l.id
-            WHERE ro.origin_model = 'sale_order' AND ro.origin_id = ? AND ro.status = 'confirmed'
+            WHERE ro.origin_model = 'sale_order' AND ro.origin_id = ? AND ro.status = 'done'
         """, (order_id,)).fetchall()
         company = conn.execute("""
             SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
@@ -515,13 +526,13 @@ def sale_order_pdf(order_id: int):
             data.append([
                 line["item_name"],
                 line["item_sku"],
-                lot_code,
+                extract_shipping_lot_code(lot_code),
                 str(int(qty_to_bill)) if qty_to_bill == int(qty_to_bill) else f"{qty_to_bill:.2f}",
                 f"{price:.2f}",
                 f"{line_total:.2f}"
             ])
 
-    table = Table(data, colWidths=[120, 45, 90, 35, 45, 55])
+    table = Table(data, colWidths=[120, 45, 120, 35, 45, 55])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -537,12 +548,12 @@ def sale_order_pdf(order_id: int):
     elements.append(table)
     elements.append(Spacer(1, 18))
 
-    # Table for confirmed returns (negative prices)
+    # Table for done returns (negative prices)
     refund_total_net = 0.0
     refund_total_tax = 0.0
     refund_total_gross = 0.0
     if return_lines:
-        elements.append(Paragraph("<b>Confirmed Returns</b>", styles["Heading3"]))
+        elements.append(Paragraph("<b>Done Returns</b>", styles["Heading3"]))
         ret_data = [["Return#", "Item", "SKU", "Lot", "Qty", "Unit €", "Total €", "Tax €"]]
         for rl in return_lines:
             qty = float(rl["quantity"])
@@ -563,7 +574,7 @@ def sale_order_pdf(order_id: int):
                 f"{-refund_net:.2f}",
                 f"{-refund_tax:.2f}"
             ])
-        ret_table = Table(ret_data, colWidths=[60, 90, 45, 60, 35, 45, 55, 45])
+        ret_table = Table(ret_data, colWidths=[65, 90, 45, 60, 35, 45, 55, 45])
         ret_table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
             ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -886,13 +897,13 @@ def print_quotation_pdf(quotation_id: int):
         data.append([
             line["item_name"],
             line["item_sku"],
-            lot_code,
+            extract_shipping_lot_code(lot_code),
             str(int(qty)) if qty == int(qty) else f"{qty:.2f}",
             f"{price:.2f}",
             f"{line_total:.2f}"
         ])
 
-    table = Table(data, colWidths=[120, 45, 90, 35, 45, 55])
+    table = Table(data, colWidths=[120, 45, 120, 35, 45, 55])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('TEXTCOLOR', (0,0), (-1,0), colors.black),

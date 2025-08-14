@@ -46,6 +46,13 @@
           <input id="partner-billing-country" placeholder="Billing Country"><br>
         </div>
         <button type="submit">Confirm Address</button>
+        <div id="shipping-loading" style="display:none;text-align:center;">
+  <span class="spinner" style="display:inline-block;width:24px;height:24px;border:3px solid #ccc;border-top:3px solid #333;border-radius:50%;animation:spin 1s linear infinite;"></span>
+  <span>We're evaluating the shipping conditions for your purchase...</span>
+</div>
+<style>
+@keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
         <!-- Shipping options always below address, visually separated -->
         <div id="shipping-options" style="display:none; margin-top:20px;">
           <h4>Shipping Options</h4>
@@ -64,4 +71,3 @@
   <script src="/static/js/customer.js"></script>
 </body>
 </html>
-<!-- TODO: Add Shop Return Orders Label download button, Fix issue with MO: new products dont integrate in the sale order flow, MO status=done does not update stock properly, finish shop pages, implement put-away rules, optimize picking. -->

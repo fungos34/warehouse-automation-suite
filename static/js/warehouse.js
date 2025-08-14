@@ -388,6 +388,27 @@ async function loadManufacturingItems() {
         select.appendChild(opt);
     });
 }
+
+async function fetchMOsWithCarrierLabel() {
+    // Fetch all carrier_label records and join with MO/item for display
+    const [labels, mos, items] = await Promise.all([
+        fetch('/carrier-labels', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
+        fetch('/manufacturing-orders/', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json()),
+        fetch('/items', { headers: { Authorization: 'Bearer ' + jwtToken } }).then(r => r.json())
+    ]);
+    const moIdsWithLabel = new Set(labels.map(l => l.mo_id));
+    const itemMap = Object.fromEntries(items.map(i => [i.id, i]));
+    const select = document.getElementById('mo-select-with-label');
+    select.innerHTML = '';
+    mos.filter(mo => moIdsWithLabel.has(mo.id)).forEach(mo => {
+        const item = itemMap[mo.item_id] || {};
+        const opt = document.createElement('option');
+        opt.value = mo.id;
+        opt.textContent = `#${mo.code} - ${item.sku || ''} ${item.name || ''} x${mo.quantity}`;
+        select.appendChild(opt);
+    });
+}
+
 document.getElementById('mo-create-form').onsubmit = async function(e) {
     e.preventDefault();
     const item_id = document.getElementById('mo-item-select').value;
@@ -440,11 +461,12 @@ document.getElementById('mo-done-btn').onclick = async function() {
     });
     document.getElementById('mo-result').textContent = (await resp.json()).message;
     fetchManufacturingOrders();
+    fetchMOsWithCarrierLabel();
 };
 
 // Add a button in your MO details panel:
 document.getElementById('mo-download-label-btn').onclick = async function() {
-    const moId = document.getElementById('mo-select-confirmed').value;
+    const moId = document.getElementById('mo-select-with-label').value;
     if (!moId) return;
     const resp = await fetch(`/manufacturing-orders/${moId}/carrier-label`, {
         headers: { Authorization: 'Bearer ' + jwtToken }
@@ -473,6 +495,7 @@ document.getElementById('mo-confirm-btn').onclick = async function() {
     });
     document.getElementById('mo-result').textContent = (await resp.json()).message;
     fetchManufacturingOrders();
+    fetchMOsWithCarrierLabel();
 };
 
 document.getElementById('mo-cancel-btn').onclick = async function() {
@@ -484,6 +507,7 @@ document.getElementById('mo-cancel-btn').onclick = async function() {
     });
     document.getElementById('mo-result').textContent = (await resp.json()).message;
     fetchManufacturingOrders();
+    fetchMOsWithCarrierLabel();
 };
 
 document.getElementById('mo-download-btn').onclick = async function() {
@@ -567,7 +591,7 @@ async function fetchDoneManufacturingOrders() {
 }
 
 
-
+fetchMOsWithCarrierLabel();
 fetchDoneManufacturingOrders();
 fetchAllManufacturingOrders();
 

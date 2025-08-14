@@ -290,6 +290,10 @@ function togglePanel(panelId, btn) {
     panel.style.display = 'none';
     btn.textContent = btn.textContent.replace('Hide', 'Show');
     }
+        // Now refresh the return orders list
+    if (document.getElementById('return-orders-list')) {
+        loadReturnOrders();
+    }
 }
 
 document.getElementById('toggle-customer').onclick = function() {

@@ -550,6 +550,12 @@ def set_manufacturing_order_done(mo_id: int, username: str = Depends(get_current
         }
 
 
+@router.get("/carrier-labels", tags=["Warehouse"])
+def list_carrier_labels(username: str = Depends(get_current_username)):
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM carrier_label").fetchall()
+        return [dict(row) for row in rows]
+
 # Endpoint to download or redirect to the label
 @router.get("/manufacturing-orders/{mo_id}/carrier-label", tags=["Warehouse"])
 def download_carrier_label(mo_id: int, username: str = Depends(get_current_username)):
