@@ -115,3 +115,13 @@ class LotCreate(BaseModel):
 
 class PurchaseLabelRequest(BaseModel):
     rate_id: str
+
+class CompanyCreate(BaseModel):
+    name: str
+    vat_number: str = ""
+    logo_url: str = ""
+    website: str = ""
+    partner_id: int = None  # Optional, if you want to link to a partner
+
+class BookingRequest(BaseModel):
+    partner_id: int

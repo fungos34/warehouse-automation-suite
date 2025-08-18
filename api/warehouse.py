@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response, Query
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Response, Query, Body
 from database import get_conn
 from models import (
     TransferOrderCreate, TransferOrderLineIn,
-    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate, LotCreate
+    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate, LotCreate, CompanyCreate, BookingRequest
 )
+from fastapi.responses import JSONResponse
 import requests
 from auth import get_current_username
 from typing import List
@@ -375,10 +376,12 @@ def get_items(): # username: str = Depends(get_current_username)
                 i.is_digital,
                 i.is_assemblable,
                 i.is_disassemblable,
+                i.description,           -- <-- Add this line
                 cost_cur.code AS cost_currency_code,
                 i.cost_currency_id,
                 pli.price AS sales_price,
-                sales_cur.code AS sales_currency_code
+                sales_cur.code AS sales_currency_code,
+                i.image_url              -- <-- Add this line if you want images too
             FROM item i
             LEFT JOIN currency cost_cur ON i.cost_currency_id = cost_cur.id
             LEFT JOIN price_list_item pli ON pli.item_id = i.id {"AND pli.price_list_id = ?" if price_list_id else ""}
@@ -387,6 +390,7 @@ def get_items(): # username: str = Depends(get_current_username)
             ORDER BY i.id
         """, (price_list_id,) if price_list_id else ()).fetchall()
         return [dict(row) for row in result]
+
 
 @router.get("/items/by-sku/{sku}", tags=["Catalog"])
 def get_item_by_sku(sku: str):
@@ -442,6 +446,74 @@ def get_item(item_id: int):
             raise HTTPException(status_code=404, detail="Item not found")
         return dict(result)
     
+
+@router.get("/service-hours/{sku}", tags=["Service"])
+def get_service_hours_by_sku(sku: str):
+    with get_conn() as conn:
+        item_row = conn.execute("SELECT id FROM item WHERE sku = ?", (sku,)).fetchone()
+        if not item_row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        item_id = item_row["id"]
+        hours = conn.execute("""
+            SELECT weekday, start_time, end_time
+            FROM service_hours
+            WHERE item_id = ?
+            ORDER BY 
+                CASE weekday
+                    WHEN 'Monday' THEN 1
+                    WHEN 'Tuesday' THEN 2
+                    WHEN 'Wednesday' THEN 3
+                    WHEN 'Thursday' THEN 4
+                    WHEN 'Friday' THEN 5
+                    WHEN 'Saturday' THEN 6
+                    WHEN 'Sunday' THEN 7
+                    ELSE 8
+                END
+        """, (item_id,)).fetchall()
+        exceptions = conn.execute("""
+            SELECT start_datetime, end_datetime, description
+            FROM service_exception
+            WHERE item_id = ?
+            ORDER BY start_datetime
+        """, (item_id,)).fetchall()
+        return {
+            "hours": [dict(row) for row in hours],
+            "exceptions": [dict(row) for row in exceptions]
+        }
+
+
+@router.get("/service-bookings/{sku}/available", tags=["Service"])
+def get_available_service_bookings(sku: str):
+    with get_conn() as conn:
+        item_row = conn.execute("SELECT id FROM item WHERE sku = ?", (sku,)).fetchone()
+        if not item_row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        item_id = item_row["id"]
+        bookings = conn.execute("""
+            SELECT id, start_datetime, end_datetime, status
+            FROM service_booking
+            WHERE item_id = ? AND status = 'pending'
+            ORDER BY start_datetime
+        """, (item_id,)).fetchall()
+        return [dict(row) for row in bookings]
+
+
+@router.post("/service-bookings/{booking_id}/book", tags=["Service"])
+def book_service_booking(booking_id: int, req: BookingRequest):
+    partner_id = req.partner_id
+    with get_conn() as conn:
+        # Only allow booking if still pending
+        booking = conn.execute("SELECT status FROM service_booking WHERE id = ?", (booking_id,)).fetchone()
+        if not booking or booking["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Booking not available")
+        conn.execute("""
+            UPDATE service_booking
+            SET partner_id = ?, status = 'confirmed'
+            WHERE id = ?
+        """, (partner_id, booking_id))
+        conn.commit()
+        return {"message": "Booking confirmed"}
+
 
 @router.post("/stock-adjustments/", tags=["Warehouse"])
 def add_stock_adjustment(item_id: int, location_id: int, delta: int, reason: str, username: str = Depends(get_current_username)):
@@ -641,6 +713,87 @@ def create_manufacturing_order(
         """, (code, partner_id, data.item_id, data.quantity, planned_start, planned_end, "Manual creation"))  # Assuming 11 is the default manufacturing location ID
         conn.commit()
         return {"manufacturing_order_id": cur.lastrowid, "code": code}
+
+
+@router.post("/unbuild-orders/{order_code}/confirm-receipt", tags=["Sales"])
+def confirm_unbuild_order_receipt(order_code: str):  # username: str = Depends(get_current_username)
+    with get_conn() as conn:
+        # Find the unbuild order by code
+        uo = conn.execute(
+            "SELECT id, status FROM unbuild_order WHERE code = ?",
+            (order_code,)
+        ).fetchone()
+        if not uo:
+            raise HTTPException(status_code=404, detail="Unbuild order not found")
+        if uo["status"] == "done":
+            return {"message": "Receipt already confirmed"}
+        conn.execute(
+            "UPDATE unbuild_order SET status = 'done' WHERE id = ?",
+            (uo["id"],)
+        )
+        conn.commit()
+        return {"message": "Receipt confirmed"}
+
+
+@router.get("/company/name", response_class=JSONResponse)
+async def get_company_name():
+    with get_conn() as conn:
+        row = conn.execute("SELECT name FROM company LIMIT 1").fetchone()
+        return {"name": row["name"] if row else "Shop"}
+
+
+@router.get("/company/address", response_class=JSONResponse)
+async def get_company_address():
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT c.name AS company_name, c.logo_url, c.website, p.street, p.zip, p.city, p.country, p.phone, p.email
+            FROM company c
+            JOIN partner p ON c.partner_id = p.id
+            LIMIT 1
+        """).fetchone()
+        return {
+            "name": row["company_name"] if row else "",
+            "logo_url": row["logo_url"] if row else "",
+            "website": row["website"] if row else "",
+            "street": row["street"] if row else "",
+            "zip": row["zip"] if row else "",
+            "city": row["city"] if row else "",
+            "country": row["country"] if row else "",
+            "phone": row["phone"] if row else "",
+            "email": row["email"] if row else ""
+        }
+    
+@router.post("/companies", tags=["Company"])
+def create_company(data: CompanyCreate):
+    with get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO company (name, vat_number, logo_url, website, partner_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (data.name, data.vat_number, data.logo_url, data.website, data.partner_id))
+        conn.commit()
+        return {"id": cur.lastrowid}
+
+
+@router.get("/company/{company_id}/opening-hours", tags=["Company"])
+def get_opening_hours(company_id: int):
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT day_of_week, open_time, close_time
+            FROM opening_hours
+            WHERE company_id = ?
+            ORDER BY 
+                CASE day_of_week
+                    WHEN 'Monday' THEN 1
+                    WHEN 'Tuesday' THEN 2
+                    WHEN 'Wednesday' THEN 3
+                    WHEN 'Thursday' THEN 4
+                    WHEN 'Friday' THEN 5
+                    WHEN 'Saturday' THEN 6
+                    WHEN 'Sunday' THEN 7
+                    ELSE 8
+                END
+        """, (company_id,)).fetchall()
+        return [dict(row) for row in rows]
 
 
 @router.post("/bom/{bom_id}/file", tags=["Warehouse"])

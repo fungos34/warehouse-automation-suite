@@ -97,12 +97,12 @@ def confirm_quotation(quotation_id: int):  # username: str = Depends(get_current
         conn.commit()
         # Fetch the sale order created by the trigger
         sale_order = conn.execute(
-            "SELECT id FROM sale_order WHERE quotation_id = ? ORDER BY id DESC LIMIT 1",
+            "SELECT id, code FROM sale_order WHERE quotation_id = ? ORDER BY id DESC LIMIT 1",
             (quotation_id,)
         ).fetchone()
         if not sale_order:
             raise HTTPException(status_code=500, detail="Sale order not created by trigger")
-        return {"sale_order_id": sale_order["id"]}
+        return {"sale_order_code": sale_order["code"]}
 
 # --- SALE ORDER ENDPOINTS ---
 @router.post("/sale-orders/", tags=["Sales"])

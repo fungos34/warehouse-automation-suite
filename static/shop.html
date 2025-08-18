@@ -4,70 +4,343 @@
   <meta charset="UTF-8" />
   <title>Shop</title>
   <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://kit.fontawesome.com/7e2c6b8e7e.js" crossorigin="anonymous"></script>
 </head>
-<body>
-  <div id="shop-customer-panel">
-    <h3>Shop</h3>
-    <div id="item-list"></div>
-    <hr style="margin:20px 0;">
+<body class="shop-bg">
+  <div class="shop-main-card">
+    
+    <div id="buy-result" style="display:none;">
+      <span id="buy-result-message"></span>
+      <button id="buy-result-close" style="margin-left:12px;">&times;</button>
+    </div>
+    <div id="partner-error" style="display:none;">
+      <span id="partner-error-message"></span>
+      <button id="partner-error-close" style="margin-left:12px;">&times;</button>
+    </div>
+    <!-- Header -->
+    <div class="shop-header">
+      <span class="shop-icon"><i class="fas fa-store"></i></span>
+      <h2>Shop</h2>
+      <a href="/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Enter Warehouse</a>
+    </div>
+
+    <!-- Item List -->
+    <div id="item-list" class="shop-item-grid">
+      <!-- Item cards will be rendered here by JS -->
+    </div>
+
+    <hr style="margin:24px 0;">
     <h4>Cart</h4>
-    <div id="cart-options">
-        <label><input type="radio" name="delivery" value="ship" checked> Ship to address</label>
-        <label><input type="radio" name="delivery" value="pickup"> Pick up at warehouse</label>
-        <div id="pickup-address" style="display:none;">
-            <small>Pickup address: Main Warehouse, Warehouse St 1, 12345 City</small>
-        </div>
-        <label><input type="checkbox" id="split-parcel"> Allow parcel split</label>
-        <label><input type="checkbox" id="pick-pack"> Pick & Pack by fulfillment service</label>
+    <div id="cart-list" class="cart-fancy"></div>
+
+    <!-- Step 1: Cart Actions -->
+    <div class="action-row" id="cart-action-row">
+      <button id="proceed-checkout-btn" class="shop-buy-btn">
+        <i class="fas fa-arrow-right"></i> Proceed to Check-Out
+      </button>
+      <button id="cancel-checkout-btn" class="shop-cancel-btn" disabled>
+        <i class="fas fa-times-circle"></i> Cancel
+      </button>
     </div>
-    <div id="cart-list" class="cart-fancy">
-      <!-- Cart items will be rendered here -->
-    </div>
-    <button id="buy-btn">Buy</button>
-    <div id="buy-result"></div>
-    <!-- Customer details form (hidden by default) -->
-    <div id="customer-form" style="display:none;">
-      <form id="partner-form">
-        <h4>Shipping Address</h4>
-        <!-- Shipping fields -->
-        <input id="partner-name" placeholder="Full Name" required><br>
-        <input id="partner-email" placeholder="Email" required><br>
-        <input id="partner-phone" placeholder="Phone" required><br>
-        <input id="partner-street" placeholder="Street" required><br>
-        <input id="partner-city" placeholder="City" required><br>
-        <input id="partner-zip" placeholder="ZIP" required><br>
-        <input id="partner-country" placeholder="Country" required><br>
-        <label><input type="checkbox" id="billing-different"> Billing address is different</label>
-        <div id="billing-fields" style="display:none;">
-          <h4>Billing Address</h4>
-          <input id="partner-billing-street" placeholder="Billing Street"><br>
-          <input id="partner-billing-city" placeholder="Billing City"><br>
-          <input id="partner-billing-zip" placeholder="Billing ZIP"><br>
-          <input id="partner-billing-country" placeholder="Billing Country"><br>
+        <!-- Step 2: Address Actions -->
+      <div id="address-section" style="display:none;">
+        <!-- Cart Options (Address, Delivery, etc.) -->
+        <div id="cart-options" style="display:none;">
+          <div class="option-group" id="delivery-options">
+            <label class="option-radio" id="shipping-delivery-option">
+              <input type="radio" name="delivery" value="ship" checked>
+              <span class="custom-radio"></span>
+              Ship to address
+            </label>
+            <label class="option-radio" id="pickup-delivery-option">
+              <input type="radio" name="delivery" value="pickup">
+              <span class="custom-radio"></span>
+              Pick up at warehouse
+            </label>
+            <label class="option-radio" id="digital-delivery-option" style="display:none;">
+              <input type="radio" name="delivery" value="digital">
+              <span class="custom-radio"></span>
+              Transmit electronically
+            </label>
+          </div>
+
+          <!-- Address Block -->
+          <div id="address-block">
+            <!-- Pickup Address Section -->
+            <div id="pickup-address" class="pickup-address">
+              <i class="fas fa-map-marker-alt"></i>
+              <div class="pickup-address-details">
+                <div id="warehouse-info">
+                  <b>${data.name || 'Main Warehouse'}</b><br>
+                  ${data.street}<br>
+                  ${data.zip} ${data.city}<br>
+                  ${data.country}<br>
+
+                  <!-- <div id="warehouse-opening-hours"></div>
+                  <div id="service-bookings-list"></div> -->
+
+                <div class="pickup-map-embed" style="position:relative;">
+                    <iframe
+                        id="pickup-map-iframe"
+                        width="100%"
+                        height="220"
+                        style="border-radius:8px;border:0;display:block;"
+                        loading="lazy"
+                        allowfullscreen
+                        referrerpolicy="no-referrer-when-downgrade"
+                        src="https://www.google.com/maps?q=${encodeURIComponent(data.street + ' ' + data.zip + ' ' + data.city + ' ' + data.country)}&output=embed"
+                        onerror="showPickupMapLink()"
+                    ></iframe>
+                    <a id="pickup-map-link" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(data.street + ' ' + data.zip + ' ' + data.city + ' ' + data.country)}"
+                      target="_blank"
+                      class="pickup-map-link"
+                      style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#e3f2fd;padding:12px 18px;border-radius:8px;color:#1565c0;font-weight:500;text-decoration:none;">
+                        <i class="fas fa-map"></i> Show on Google Maps
+                    </a>
+                </div>
+                </div>
+                <div class="address-fields-group">
+                  <div class="address-section billing-section" id="billing-fields-pickup" style="display:none;">
+                    <!-- <h4>Billing Address</h4> -->
+                    <div id="billing-fields-container-pickup"></div>
+                    <div id="settings-container-pickup"></div>
+                  </div>
+                  <div class="address-section company-section" id="company-fields-pickup" style="display:none;">
+                    <!-- <h4>Company Details</h4> -->
+                    <div id="company-fields-container-pickup"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Add this after the pickup-address block -->
+            <!-- <div id="pickup-booking-block" class="pickup-booking-block"></div>
+            <div id="pickup-booking-controls" class="pickup-booking-controls"></div> -->
+
+            <!-- Shipping Address Section -->
+            <div id="shipping-address-block" class="pickup-address" style="display:flex;">
+              <i class="fas fa-address-card"></i>
+              <div class="pickup-address-details">
+                <div class="address-fields-group">
+                  <div class="address-section shipping-section">
+                    <!-- <h4>Shipping Address</h4> -->
+                    <div id="shipping-fields-container">
+                      
+                      <div id="shipping-fields" style="display:none;">
+                        <h4>Shipping Address</h4>
+                        <!-- All shipping fields with unique IDs -->
+                        <div class="input-row">
+                          <input id="partner-name" placeholder="Full Name" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-email" placeholder="Email" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-phone" placeholder="Phone" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-street" placeholder="Street" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-city" placeholder="City" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-zip" placeholder="ZIP" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-country" placeholder="Country" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <textarea id="partner_notes" placeholder="Notes"></textarea>
+                        </div>
+                      </div>
+
+                    </div>
+                    <div id="settings-container-ship">
+                      <label class="option-checkbox" id="billing-different-fields-container">
+                        <input type="checkbox" id="billing-different">
+                        <span class="custom-checkbox"></span>
+                        Different Billing Address
+                      </label>
+                      <label class="option-checkbox" id="is-company-fields-container">
+                        <input type="checkbox" id="is-company">
+                        <span class="custom-checkbox"></span>
+                        This is a company order (B2B)
+                      </label>
+                    </div>
+                  </div>
+                  <div class="address-section billing-section" id="billing-fields-ship" style="display:none;">
+                    <!-- <h4>Billing Address</h4> -->
+                    <div id="billing-fields-container-ship">
+                      
+                      <div id="billing-fields" style="display:none;">
+                        <h4>Billing Address</h4>
+                        <!-- All billing fields with unique IDs -->
+                        <div class="input-row">
+                          <input id="partner-billing-name" placeholder="Billing Name" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-email" placeholder="Billing Email" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-phone" placeholder="Billing Phone" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-street" placeholder="Billing Street" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-city" placeholder="Billing City" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-zip" placeholder="Billing ZIP" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="partner-billing-country" placeholder="Billing Country" required>
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <textarea id="partner-billing_notes" placeholder="Billing Notes"></textarea>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                  <div class="address-section company-section" id="company-fields-ship" style="display:none;">
+                    <div id="company-fields-container-ship">
+                      
+                      <div id="company-fields">
+                        <h4>Company Details</h4>
+                        <div class="input-row">
+                          <input id="company-name" placeholder="Company Name">
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="company-vat-number" placeholder="VAT Number">
+                          <span class="required-marker">*</span>
+                        </div>
+                        <div class="input-row">
+                          <input id="company-logo-url" placeholder="Logo URL">
+                        </div>
+                        <div class="input-row">
+                          <input id="company-website" placeholder="Website">
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Parcel Options -->
+          <div class="option-group" id="parcel-options">
+            <label class="option-checkbox">
+              <input type="checkbox" id="split-parcel">
+              <span class="custom-checkbox"></span>
+              Allow parcel split
+            </label>
+            <label class="option-checkbox">
+              <input type="checkbox" id="pick-pack">
+              <span class="custom-checkbox"></span>
+              Pick & Pack by fulfillment service
+            </label>
+          </div>
         </div>
-        <button type="submit">Confirm Address</button>
-        <div id="shipping-loading" style="display:none;text-align:center;">
-  <span class="spinner" style="display:inline-block;width:24px;height:24px;border:3px solid #ccc;border-top:3px solid #333;border-radius:50%;animation:spin 1s linear infinite;"></span>
-  <span>We're evaluating the shipping conditions for your purchase...</span>
-</div>
-<style>
-@keyframes spin { 100% { transform: rotate(360deg); } }
-</style>
-        <!-- Shipping options always below address, visually separated -->
-        <div id="shipping-options" style="display:none; margin-top:20px;">
-          <h4>Shipping Options</h4>
-          <select id="shipping-rate-select"></select>
-          <div id="shipping-rate-info" style="margin-top:8px;"></div>
-          <button type="button" id="confirm-carrier-btn" style="margin-top:10px;display:none;" disabled>Confirm Carrier</button>
+
+        
+
+        <!-- Customer Form -->
+        <div id="customer-form">
+          <form id="partner-form">
+            <div class="action-row" id="address-action-row">
+              <button id="confirm-data-btn" class="shop-buy-btn">
+                <i class="fas fa-check-circle"></i> Confirm Data
+              </button>
+              <button id="cancel-address-btn" class="shop-cancel-btn" disabled>
+                <i class="fas fa-times-circle"></i> Cancel
+              </button>
+            </div>
+          </form>
         </div>
-        <button type="button" id="partner-cancel-btn" style="margin-left:10px;">Cancel</button>
-      </form>
-      <div id="partner-error" style="color:red"></div>
-      <div id="quotation-preview"></div>
+      </div>
+
+        <!-- Step 3: Shipping Actions (if needed) -->
+        <div id="shipping-section" style="display:none;">
+
+          <div id="shipping-options-container" class="shipping-address-block">
+
+              <div id="shipping-loading" class="shipping-loading-centered" style="display:none;">
+                <span class="shipping-spinner">
+                  <span class="shipping-spinner-dot"></span>
+                  <span class="shipping-spinner-dot"></span>
+                  <span class="shipping-spinner-dot"></span>
+                </span>
+                <span class="shipping-loading-message">We're evaluating the shipping conditions for your purchase...</span>
+              </div>
+
+              <div id="shipping-options">
+                <i class="fas fa-truck"></i>
+                <div class="shipping-address-details">
+                  <h3 class="shipping-options-title" style="color:#1565c0;font-size:1.18rem;font-weight:600;margin:0 0 8px 0;">
+                    Select your shipping carrier and method
+                  </h3>
+                  <div class="shipping-options-explanation" style="color:#4f8cff;font-size:0.98rem;margin-bottom:4px;">
+                    Please choose a carrier for delivering your order. The price and service level are shown for each option. Select one and confirm to proceed.
+                  </div>
+                  <div class="shipping-rate-sort-tabs">
+                    <button class="shipping-rate-sort-btn" data-sort="cheapest">Cheapest</button>
+                    <button class="shipping-rate-sort-btn" data-sort="fastest">Fastest</button>
+                    <button class="shipping-rate-sort-btn" data-sort="rated">Best Rated</button>
+                  </div>
+                  <div class="shipping-rate-pagination" id="shipping-rate-pagination"></div>
+                  <div id="shipping-rate-list" class="shipping-rate-list"></div>
+                  <div id="shipping-rate-info" style="margin-top:8px;"></div>
+                  <div class="action-row" id="shipping-action-row">
+                    <button id="confirm-shipping-btn" class="shop-buy-btn">
+                      <i class="fas fa-truck"></i> Confirm Shipping
+                    </button>
+                    <button id="cancel-shipping-btn" class="shop-cancel-btn" disabled>
+                      <i class="fas fa-times-circle"></i> Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+          </div>
+
+        </div>
+
+        <!-- Step 4: Payment Section -->
+        <div id="payment-section" style="display:none;">
+          <div id="quotation-preview"></div>
+          <div class="action-row" id="payment-action-row">
+            <button id="confirm-pay-btn" class="shop-buy-btn" disabled>
+              <i class="fas fa-credit-card"></i> Place Order (Payment Required)
+            </button>
+            <button id="cancel-payment-btn" class="shop-cancel-btn" disabled>
+              <i class="fas fa-times-circle"></i> Cancel
+            </button>
+          </div>
+        </div>
+
     </div>
-    <div id="customer-form-overlay" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.25);z-index:1999;"></div>
-  </div>
+
   <script src="/static/js/returns.js"></script>
   <script src="/static/js/customer.js"></script>
+
 </body>
 </html>

@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS item (
     sku TEXT UNIQUE NOT NULL,
     barcode TEXT UNIQUE NOT NULL,
     size TEXT CHECK (size IN ('small','big')),
+    image_url TEXT, -- Optional: URL to an image of the item
     length REAL,                -- length in cm
     width REAL,                 -- width in cm  
     height REAL,                -- height in cm
@@ -135,23 +136,82 @@ CREATE TABLE IF NOT EXISTS carrier_label (
 CREATE TABLE IF NOT EXISTS partner (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    street TEXT NOT NULL,           -- delivery street
-    city TEXT NOT NULL,             -- delivery city
-    country TEXT NOT NULL,          -- delivery country
-    zip TEXT NOT NULL,              -- delivery zip
-    billing_street TEXT,            -- billing street
-    billing_city TEXT,              -- billing city
-    billing_country TEXT,           -- billing country
-    billing_zip TEXT,               -- billing zip
+    street TEXT NOT NULL,
+    city TEXT NOT NULL,
+    country TEXT NOT NULL,
+    zip TEXT NOT NULL,
     email TEXT,
     phone TEXT,
+    notes TEXT,
+    billing_name TEXT,
+    billing_street TEXT,
+    billing_city TEXT,
+    billing_country TEXT,
+    billing_zip TEXT,
+    billing_email TEXT,
+    billing_phone TEXT,
+    billing_notes TEXT,
     partner_type TEXT CHECK (partner_type IN ('vendor','customer','employee','carrier')) NOT NULL DEFAULT 'customer'
+);
+
+
+CREATE TABLE IF NOT EXISTS service_hours (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    weekday TEXT CHECK (weekday IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', '24/7')) NOT NULL,
+    start_time TIME DEFAULT '00:00:00',
+    end_time TIME DEFAULT '23:59:59',
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
+);
+
+CREATE TABLE service_exception (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    start_datetime DATETIME,
+    end_datetime DATETIME,
+    description TEXT,
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
+);
+
+CREATE TABLE IF NOT EXISTS service_window (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    timedelta INTEGER NOT NULL,          -- Duration of the service window
+    unit_time TEXT CHECK (unit_time IN ('second', 'minute', 'hour', 'day', 'week', 'month', 'year')) NOT NULL,
+    max_bookings INTEGER DEFAULT 1,      -- How many bookings allowed for this window
+    current_bookings INTEGER DEFAULT 0,  -- Updated as bookings are made
+    notes TEXT,
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(lot_id) REFERENCES lot(id)
+);
+
+CREATE TABLE IF NOT EXISTS service_booking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_id INTEGER,         -- Customer who booked
+    item_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    service_window_id INTEGER NOT NULL,       -- The booked window
+    start_datetime DATETIME DEFAULT CURRENT_TIMESTAMP,
+    end_datetime DATETIME, -- Nullable: can be calculated based on service_window
+    status TEXT CHECK(status IN ('pending','confirmed','cancelled','done')) DEFAULT 'pending',
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(partner_id) REFERENCES partner(id),
+    FOREIGN KEY(service_window_id) REFERENCES service_window(id)
 );
 
 -- Create company
 CREATE TABLE IF NOT EXISTS company (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    vat_number TEXT,
+    logo_url TEXT,
+    website TEXT,
     partner_id INTEGER,
     FOREIGN KEY (partner_id) REFERENCES partner(id)
 );
@@ -163,6 +223,9 @@ CREATE TABLE IF NOT EXISTS user (
     company_id INTEGER,
     username TEXT UNIQUE,
     password_hash TEXT,
+    image_url TEXT,
+    role TEXT CHECK(role IN ('admin','manager','employee','customer')) DEFAULT 'employee',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(partner_id) REFERENCES partner(id),
     FOREIGN KEY(company_id) REFERENCES company(id)
 );
@@ -698,8 +761,109 @@ CREATE TABLE IF NOT EXISTS debug_log (
 );
 
 
+DROP TRIGGER IF EXISTS trg_service_booking_set_end_datetime;
+CREATE TRIGGER trg_service_booking_set_end_datetime
+AFTER INSERT ON service_booking
+BEGIN
+    UPDATE service_booking
+    SET end_datetime = 
+        CASE
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'second'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' seconds')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'minute'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' minutes')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'hour'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' hours')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'day'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' days')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'week'
+                THEN datetime(NEW.start_datetime, '+' || ((SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 7) || ' days')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'month'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' months')
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'year'
+                THEN datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' years')
+            ELSE NEW.start_datetime
+        END
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_service_booking_validate
+BEFORE INSERT ON service_booking
+BEGIN
+    -- 1. Calculate the intended end_datetime
+    SELECT
+        CASE
+            WHEN (
+                SELECT COUNT(*) FROM service_window WHERE id = NEW.service_window_id
+            ) = 0
+            THEN RAISE(ABORT, 'Invalid service_window_id')
+        END;
+    -- Get the window duration in minutes for the booking
+    SELECT
+        CASE
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'minute'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id)
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'hour'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 60
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'day'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 1440
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'week'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 10080
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'month'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 43200
+            WHEN (SELECT unit_time FROM service_window WHERE id = NEW.service_window_id) = 'year'
+                THEN (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) * 525600
+            ELSE 0
+        END AS window_duration_minutes;
+    -- Abort if booking overlaps with a service exception
+    SELECT CASE
+        WHEN EXISTS (
+            SELECT 1 FROM service_exception
+            WHERE item_id = NEW.item_id
+              AND (lot_id IS NULL OR lot_id = NEW.lot_id)
+              AND (
+                  (NEW.start_datetime < end_datetime AND NEW.end_datetime > start_datetime)
+              )
+        )
+        THEN RAISE(ABORT, 'Booking overlaps with a service exception')
+    END;
+
+    -- Abort if booking is outside allowed service hours
+    -- Calculate intended end_datetime
+    SELECT
+        CASE
+            WHEN NOT EXISTS (
+                SELECT 1 FROM service_hours
+                WHERE item_id = NEW.item_id
+                AND (lot_id IS NULL OR lot_id = NEW.lot_id)
+                AND (
+                    weekday = CASE strftime('%w', NEW.start_datetime)
+                        WHEN '0' THEN 'Sunday'
+                        WHEN '1' THEN 'Monday'
+                        WHEN '2' THEN 'Tuesday'
+                        WHEN '3' THEN 'Wednesday'
+                        WHEN '4' THEN 'Thursday'
+                        WHEN '5' THEN 'Friday'
+                        WHEN '6' THEN 'Saturday'
+                    END
+                    OR weekday = '24/7'
+                )
+                AND (
+                    (start_time IS NULL OR time(NEW.start_datetime) >= start_time)
+                    AND (end_time IS NULL OR time(
+                        datetime(NEW.start_datetime, '+' || (SELECT timedelta FROM service_window WHERE id = NEW.service_window_id) || ' minutes')
+                    ) <= end_time)
+                )
+            )
+            THEN RAISE(ABORT, 'Booking outside allowed service hours')
+        END;
+END;
+
+
 CREATE TABLE IF NOT EXISTS packing_policy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'return_order', 'purchase_order', 'vendor_return')) DEFAULT NULL,
+    origin_id INTEGER DEFAULT NULL,
     action INTEGER NOT NULL,                -- Reference to carton/box type (item_id)
     min_cumulative_length REAL,
     max_cumulative_length REAL,
@@ -733,6 +897,8 @@ CREATE TABLE IF NOT EXISTS packing_policy (
 
 CREATE TABLE IF NOT EXISTS packing_question (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_model TEXT CHECK(origin_model IN ('sale_order', 'return_order', 'purchase_order', 'vendor_return')) DEFAULT NULL,
+    origin_id INTEGER DEFAULT NULL,
     cumulative_length REAL,               -- Total length of items in source document
     cumulative_width REAL,                -- Total width of items in source document
     cumulative_height REAL,               -- Total height of items in source document
@@ -766,7 +932,9 @@ BEGIN
         SELECT action
         FROM packing_policy
         WHERE
-            (min_cumulative_length IS NULL OR cumulative_length >= min_cumulative_length)
+            (origin_model IS NULL OR origin_model = packing_question.origin_model)
+            AND (origin_id IS NULL OR origin_id = packing_question.origin_id)
+            AND (min_cumulative_length IS NULL OR cumulative_length >= min_cumulative_length)
             AND (max_cumulative_length IS NULL OR cumulative_length <= max_cumulative_length)
             AND (min_cumulative_width IS NULL OR cumulative_width >= min_cumulative_width)
             AND (max_cumulative_width IS NULL OR cumulative_width <= max_cumulative_width)
@@ -1560,6 +1728,8 @@ WHEN NEW.status = 'confirmed' AND OLD.status != 'confirmed'
 BEGIN
     -- Only if shipping is enabled in the linked quotation
     INSERT INTO packing_question (
+        origin_model,
+        origin_id,
         cumulative_length,
         cumulative_width,
         cumulative_height,
@@ -1577,6 +1747,8 @@ BEGIN
         insurance_required
     )
     SELECT
+        'sale_order',
+        NEW.id,
         SUM(i.length * ol.quantity),    -- cumulative_length
         SUM(i.width * ol.quantity),     -- cumulative_width
         SUM(i.height * ol.quantity),    -- cumulative_height
@@ -1642,94 +1814,162 @@ DROP TRIGGER IF EXISTS trg_packing_answer_create_parcel_item;
 CREATE TRIGGER trg_packing_answer_create_parcel_item
 AFTER UPDATE OF answer ON packing_question
 WHEN NEW.answer IS NOT NULL
+AND EXISTS (
+    SELECT 1 FROM item
+    WHERE id = NEW.answer
+    AND name IS NOT NULL
+    AND length IS NOT NULL
+    AND width IS NOT NULL
+    AND height IS NOT NULL
+    AND volume IS NOT NULL
+    AND weight IS NOT NULL
+)
 BEGIN
-    -- Calculate total weight: carton + sum of all order line items (weight * quantity)
+    -- Debug log: record the answer value before evaluating the item
+    INSERT INTO debug_log (event, info, created_at)
+    VALUES (
+        'trg_packing_answer_create_parcel_item',
+        'Evaluating trigger for packing_question.id=' || NEW.id || ', answer=' || NEW.answer,
+        CURRENT_TIMESTAMP
+    );
+
+    -- Create parcel item for any origin_model
     INSERT INTO item (
         name, sku, barcode, description, is_sellable, is_assemblable, is_disassemblable, is_digital,
         length, width, height, volume, weight
     )
     SELECT
-        'Parcel SO-' || (SELECT code FROM sale_order WHERE id = (SELECT quotation_id FROM sale_order WHERE code = (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1))),
-        'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
-        'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
-        'Auto-generated parcel for SO ' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1),
+        'Parcel ' || NEW.origin_model || '-' || NEW.origin_id,
+        'PKG-' || NEW.origin_model || '-' || NEW.origin_id,
+        'PKG-' || NEW.origin_model || '-' || NEW.origin_id,
+        'Auto-generated parcel for ' || NEW.origin_model || ' ' || NEW.origin_id,
         0, 1, 1, 0,
         carton.length,
         carton.width,
         carton.height,
         carton.volume,
         carton.weight + (
-            SELECT IFNULL(SUM(i.weight * ol.quantity), 0)
-            FROM order_line ol
-            JOIN item i ON i.id = ol.item_id
-            WHERE ol.order_id = (SELECT id FROM sale_order ORDER BY id DESC LIMIT 1)
-              AND i.is_digital = 0
+            SELECT IFNULL(SUM(i.weight * l.quantity), 0)
+            FROM (
+                SELECT item_id, quantity FROM order_line WHERE order_id = NEW.origin_id AND NEW.origin_model = 'sale_order'
+                UNION ALL
+                SELECT item_id, quantity FROM return_line WHERE return_order_id = NEW.origin_id AND NEW.origin_model = 'return_order'
+                UNION ALL
+                SELECT item_id, quantity FROM purchase_order_line WHERE purchase_order_id = NEW.origin_id AND NEW.origin_model = 'purchase_order'
+                -- Add vendor_return_line when you implement vendor returns
+            ) l
+            JOIN item i ON i.id = l.item_id
+            WHERE i.is_digital = 0
         )
     FROM item carton
     WHERE carton.id = NEW.answer AND carton.name IS NOT NULL;
 
     -- Create BOM for the parcel item
     INSERT INTO bom (instructions)
-    SELECT 'Auto-generated BOM for parcel SO-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)
-    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+    SELECT 'Auto-generated BOM for parcel ' || NEW.origin_model || '-' || NEW.origin_id
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id);
 
     -- Link BOM to parcel item
     UPDATE item
-    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for parcel SO-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1))
-    WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1);
+    SET bom_id = (SELECT id FROM bom WHERE instructions = 'Auto-generated BOM for parcel ' || NEW.origin_model || '-' || NEW.origin_id)
+    WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id;
 
-    -- Add BOM lines for each order line
+    -- Add BOM lines for each relevant line
     INSERT INTO bom_line (bom_id, item_id, quantity)
     SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)),
-        ol.item_id,
-        ol.quantity
-    FROM order_line ol
-    WHERE ol.order_id = (SELECT id FROM sale_order ORDER BY id DESC LIMIT 1)
-    AND (SELECT is_digital FROM item WHERE id = ol.item_id) = 0
-    AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id),
+        l.item_id,
+        l.quantity
+    FROM (
+        SELECT item_id, quantity FROM order_line WHERE order_id = NEW.origin_id AND NEW.origin_model = 'sale_order'
+        UNION ALL
+        SELECT item_id, quantity FROM return_line WHERE return_order_id = NEW.origin_id AND NEW.origin_model = 'return_order'
+        UNION ALL
+        SELECT item_id, quantity FROM purchase_order_line WHERE purchase_order_id = NEW.origin_id AND NEW.origin_model = 'purchase_order'
+        -- Add vendor_return_line when you implement vendor returns
+    ) l
+    JOIN item i ON i.id = l.item_id
+    WHERE i.is_digital = 0
+      AND EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id);
 
-    -- Add BOM line for the carton itself (consumed in MO)
+    -- Add BOM line for the carton itself
     INSERT INTO bom_line (bom_id, item_id, quantity)
     SELECT
-        (SELECT bom_id FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1)),
-        NEW.answer, -- carton item_id
+        (SELECT bom_id FROM item WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id),
+        NEW.answer,
         1
-    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || (SELECT code FROM sale_order ORDER BY id DESC LIMIT 1));
+    WHERE EXISTS (SELECT 1 FROM item WHERE sku = 'PKG-' || NEW.origin_model || '-' || NEW.origin_id);
 END;
+
 
 DROP TRIGGER IF EXISTS trg_create_unbuild_order_on_parcel_item;
 CREATE TRIGGER trg_create_unbuild_order_on_parcel_item
 AFTER INSERT ON item
-WHEN NEW.sku LIKE 'PKG-%'
+WHEN NEW.sku LIKE 'PKG-%-%'
 BEGIN
-    -- Find the sale order for this parcel (by code)
+    -- Debug log: record parsed origin_model, origin_id, and item id
+    INSERT INTO debug_log (event, info, created_at)
+    SELECT
+        'trg_create_unbuild_order_on_parcel_item',
+        'Parsed origin_model=' || substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1) ||
+        ', origin_id=' || CAST(substr(NEW.sku, 5 + length(substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1)) + 1) AS INTEGER) ||
+        ', item_id=' || NEW.id,
+        CURRENT_TIMESTAMP;
+
+    -- Parse origin_model and origin_id from SKU
     INSERT INTO unbuild_order (
         code, partner_id, item_id, quantity, status, unbuild_location_id, origin, origin_model, origin_id, trigger_id, priority
     )
     SELECT
-        'UO_' || so.code || '_' || NEW.sku,
-        so.partner_id,
+        'UO_' || NEW.sku,
+        CASE
+            WHEN parsed.origin_model = 'sale_order' THEN (SELECT partner_id FROM sale_order WHERE id = parsed.origin_id)
+            WHEN parsed.origin_model = 'return_order' THEN (SELECT partner_id FROM return_order WHERE id = parsed.origin_id)
+            WHEN parsed.origin_model = 'purchase_order' THEN (SELECT partner_id FROM purchase_order WHERE id = parsed.origin_id)
+            ELSE NULL
+        END,
         NEW.id,
         1,
         'draft',
-        (SELECT l.id FROM location l WHERE l.partner_id = so.partner_id LIMIT 1),
-        'Auto-created for SO ' || so.code,
-        'sale_order',
-        so.id,
+        (SELECT l.id FROM location l WHERE l.partner_id = (
+            CASE
+                WHEN parsed.origin_model = 'sale_order' THEN (SELECT partner_id FROM sale_order WHERE id = parsed.origin_id)
+                WHEN parsed.origin_model = 'return_order' THEN (SELECT partner_id FROM return_order WHERE id = parsed.origin_id)
+                WHEN parsed.origin_model = 'purchase_order' THEN (SELECT partner_id FROM purchase_order WHERE id = parsed.origin_id)
+                ELSE NULL
+            END
+        ) LIMIT 1),
+        'Auto-created for ' || parsed.origin_model || ' ' || parsed.origin_id,
+        parsed.origin_model,
+        parsed.origin_id,
         NULL,
-        so.priority
-    FROM sale_order so
-    WHERE so.code = substr(NEW.sku, 5, length(NEW.sku)-4)
-      AND (SELECT ship FROM quotation WHERE id = so.quotation_id) = 1;
+        CASE
+            WHEN parsed.origin_model = 'sale_order' THEN (SELECT priority FROM sale_order WHERE id = parsed.origin_id)
+            WHEN parsed.origin_model = 'return_order' THEN (SELECT priority FROM return_order WHERE id = parsed.origin_id)
+            WHEN parsed.origin_model = 'purchase_order' THEN (SELECT priority FROM purchase_order WHERE id = parsed.origin_id)
+            ELSE 0
+        END
+    FROM (
+        SELECT
+            substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1) AS origin_model,
+            CAST(substr(NEW.sku, 5 + length(substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1)) + 1) AS INTEGER) AS origin_id
+    ) AS parsed
+    WHERE parsed.origin_model IS NOT NULL AND parsed.origin_id IS NOT NULL
+        AND EXISTS (
+        SELECT 1 FROM packing_question
+        WHERE origin_model = parsed.origin_model
+          AND origin_id = parsed.origin_id
+    );
 
-    -- Immediately confirm the unbuild order
-    -- UPDATE unbuild_order
-    -- SET status = 'confirmed'
-    -- WHERE code = 'UO_' || (SELECT code FROM sale_order WHERE code = substr(NEW.sku, 5, length(NEW.sku)-4)) || '_' || NEW.sku
-    --   AND status = 'draft';
+    -- Debug log: record parsed origin_model, origin_id, and item id
+    INSERT INTO debug_log (event, info, created_at)
+    SELECT
+        'trg_create_unbuild_order_on_parcel_item',
+        'Parsed origin_model=' || substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1) ||
+        ', origin_id=' || CAST(substr(NEW.sku, 5 + length(substr(NEW.sku, 5, instr(substr(NEW.sku, 5), '-')-1)) + 1) AS INTEGER) ||
+        ', item_id=' || NEW.id,
+        CURRENT_TIMESTAMP;
 END;
-
 
 -- DROP TRIGGER IF EXISTS trg_auto_confirm_unbuild_order;
 CREATE TRIGGER trg_auto_confirm_unbuild_order
@@ -3361,93 +3601,108 @@ SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE cod
 -- Partners (add more vendors)
 INSERT INTO partner (
     name, street, city, country, zip,
-    billing_street, billing_city, billing_country, billing_zip,
-    email, phone, partner_type
+    email, phone, notes,
+    billing_name, billing_street, billing_city, billing_country, billing_zip,
+    billing_email, billing_phone, billing_notes,
+    partner_type
 ) VALUES
 ('Supplier A', 'Supplier St 1', 'Supplier City', 'CountryX', '1000',
-    'Supplier Billing St 1', 'Supplier Billing City', 'CountryX', '1001',
-    'supplierA@example.com', '123456789', 'vendor'),
+    'supplierA@example.com', '123456789', 'Preferred vendor',
+    'Supplier A Billing', 'Supplier Billing St 1', 'Supplier Billing City', 'CountryX', '1001',
+    'billingA@example.com', '123456789', 'Billing contact for Supplier A',
+    'vendor'),
 ('Supplier B', 'Supplier St 2', 'Supplier City', 'CountryX', '1002',
-    'Supplier Billing St 2', 'Supplier Billing City', 'CountryX', '1003',
-    'supplierB@example.com', '223456789', 'vendor'),
+    'supplierB@example.com', '223456789', '',
+    'Supplier B Billing', 'Supplier Billing St 2', 'Supplier Billing City', 'CountryX', '1003',
+    'billingB@example.com', '223456789', 'Billing contact for Supplier B',
+    'vendor'),
 ('Carrier C', 'Carrier Rd 10', 'Carrier City', 'CountryX', '2000',
-    'Carrier Billing Rd 10', 'Carrier Billing City', 'CountryX', '2001',
-    'carrier@example.com', '987654321', 'carrier'),
+    'carrier@example.com', '987654321', '',
+    'Carrier C Billing', 'Carrier Billing Rd 10', 'Carrier Billing City', 'CountryX', '2001',
+    'billingC@example.com', '987654321', 'Billing contact for Carrier C',
+    'carrier'),
 ('Customer B', 'Customer Ave 5', 'Customer City', 'CountryX', '3000',
-    'Customer Billing Ave 5', 'Customer Billing City', 'CountryX', '3001',
-    'customer@example.com', '555555555', 'customer'),
-('Owner A', 'Owner Rd 2', 'Owner City', 'CountryX', '1500',
-    'Owner Billing Rd 2', 'Owner Billing City', 'CountryX', '1501',
-    'owner@example.com', '111222333', 'employee'),
+    'customer@example.com', '555555555', '',
+    'Customer B Billing', 'Customer Billing Ave 5', 'Customer Billing City', 'CountryX', '3001',
+    'billing.customer@example.com', '555555555', 'Billing contact for Customer B',
+    'customer'),
+('Owner A', 'Frikusweg 10', 'Kalsdorf bei Graz', 'Austria', '8401',
+    'owner@example.com', '111222333', '',
+    'Owner A Billing', 'Nußbaumerstraße 14', 'Graz', 'Austria', '8042',
+    'billing.owner@example.com', '111222333', 'Billing contact for Owner A',
+    'employee'),
 ('Employee E', 'Employee St 3', 'Employee City', 'CountryX', '4000',
-    'Employee Billing St 3', 'Employee Billing City', 'CountryX', '4001',
-    'e@example.com', '444555666', 'employee'),
+    'e@example.com', '444555666', '',
+    'Employee E Billing', 'Employee Billing St 3', 'Employee Billing City', 'CountryX', '4001',
+    'billing.e@example.com', '444555666', 'Billing contact for Employee E',
+    'employee'),
 ('Carton Supplier', 'Carton St 10', 'Carton City', 'CountryX', '1010',
-    'Carton Billing St 10', 'Carton Billing City', 'CountryX', '1011',
-    'carton.supplier@example.com', '333444555', 'vendor');
-
+    'carton.supplier@example.com', '333444555', '',
+    'Carton Supplier Billing', 'Carton Billing St 10', 'Carton Billing City', 'CountryX', '1011',
+    'billing.carton.supplier@example.com', '333444555', 'Billing contact for Carton Supplier',
+    'vendor');
 
 -- Companies
-INSERT INTO company (partner_id, name) VALUES
-(5, "AlpWolf GmbH");
+INSERT INTO company (partner_id, name, vat_number, logo_url, website)
+VALUES
+(5, 'AlpWolf GmbH', 'ATU12345678', '/static/img/AlpWolf_logo.png', 'https://www.alpwolf.com');
 
 -- Users
-INSERT INTO user (partner_id, company_id, username, password_hash)
-VALUES (3, 1, 'admin', '$2b$12$lffwZ.0/JoHoDkBJc8WWQeOgTUvXCVYzUADAs4I/dJbMM0nn9Il0O'); -- Password: admin
+INSERT INTO user (partner_id, company_id, username, password_hash, image_url, role)
+VALUES (
+    (SELECT id FROM partner WHERE name = 'Employee E'),
+    (SELECT id FROM company WHERE name = 'AlpWolf GmbH'),
+    'admin',
+    '$2b$12$lffwZ.0/JoHoDkBJc8WWQeOgTUvXCVYzUADAs4I/dJbMM0nn9Il0O',
+    '/static/img/default_user.png',
+    'admin'
+);
 
 -- Warehouse
 INSERT INTO warehouse (name, company_id) VALUES
 ('Main Warehouse', 1);
 
 -- Items with each having its own vendor
+-- Small Item A
 INSERT INTO item (
     name, sku, barcode, size, description, route_id, vendor_id,
     cost, cost_currency_id, purchase_price, purchase_currency_id,
-    length, width, height, weight, volume
+    length, width, height, weight, volume, image_url
 ) VALUES
-('Item Small A', 'SKU001', 'BAR001', 'small', 'Small item A', NULL, (SELECT id FROM partner WHERE name = 'Supplier A'),
-    7.00, (SELECT id FROM currency WHERE code='EUR'), 7.50, (SELECT id FROM currency WHERE code='EUR'),
-    12, 10, 10, 200, 1200
-),
-('Item Big B', 'SKU002', 'BAR002', 'big', 'Big item B', NULL, (SELECT id FROM partner WHERE name = 'Supplier B'),
-    15.00, (SELECT id FROM currency WHERE code='EUR'), 16.00, (SELECT id FROM currency WHERE code='EUR'),
-    40, 20, 10, 1200, 8000
+('Item Small A', 'SKU001', 'BAR001', 'small',
+ 'A compact, lightweight product perfect for everyday use.',
+ NULL, (SELECT id FROM partner WHERE name = 'Supplier A'),
+ 7.00, (SELECT id FROM currency WHERE code='EUR'), 7.50, (SELECT id FROM currency WHERE code='EUR'),
+ 12, 10, 10, 200, 1200,
+ '/static/img/placeholder.png'
 );
 
--- Seed a new item that is a kit/product with a BOM
+-- Big Item B
+INSERT INTO item (
+    name, sku, barcode, size, description, route_id, vendor_id,
+    cost, cost_currency_id, purchase_price, purchase_currency_id,
+    length, width, height, weight, volume, image_url
+) VALUES
+('Item Big B', 'SKU002', 'BAR002', 'big',
+ 'A large, robust item for demanding tasks and heavy-duty use.',
+ NULL, (SELECT id FROM partner WHERE name = 'Supplier B'),
+ 15.00, (SELECT id FROM currency WHERE code='EUR'), 16.00, (SELECT id FROM currency WHERE code='EUR'),
+ 40, 20, 10, 1200, 8000,
+ '/static/img/placeholder.png'
+);
+
+-- Kit Alpha
 INSERT INTO item (
     name, sku, barcode, size, description, route_id, vendor_id,
     cost, cost_currency_id, purchase_price, purchase_currency_id, bom_id, is_assemblable, is_disassemblable,
-    length, width, height, weight, volume
+    length, width, height, weight, volume, image_url
 ) VALUES (
-    'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big', 'Kit consisting of Small A and Big B', NULL, NULL,
+    'Kit Alpha', 'KIT-ALPHA', 'KIT-ALPHA-BC', 'big',
+    'A premium kit combining Small A and Big B for versatile applications.',
+    NULL, NULL,
     20.00, (SELECT id FROM currency WHERE code='EUR'), NULL, (SELECT id FROM currency WHERE code='EUR'), NULL, 1, 1,
-    40, 20, 20, 2600, 17200
-);
-
--- Add a shipping fee item
-INSERT INTO item (name, description, sku, barcode, is_digital, is_assemblable, is_disassemblable, is_sellable, length, width, height, weight, volume) VALUES 
-('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 1, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
-
--- Small Carton
-INSERT INTO item (
-    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
-) VALUES (
-    'Carton Small', 'CARTON-S', 'CARTON-S-BC', 'product', 'small', 30, 20, 15, 350, 9000, 'Small shipping carton (30x20x15 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
-);
-
--- Medium Carton
-INSERT INTO item (
-    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
-) VALUES (
-    'Carton Medium', 'CARTON-M', 'CARTON-M-BC', 'product', 'big', 50, 30, 25, 600, 37500, 'Medium shipping carton (50x30x25 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
-);
-
--- Large Carton
-INSERT INTO item (
-    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id
-) VALUES (
-    'Carton Large', 'CARTON-L', 'CARTON-L-BC', 'product', 'big', 80, 40, 40, 1200, 128000, 'Large shipping carton (80x40x40 cm)', 0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier')
+    40, 20, 20, 2600, 17200,
+    '/static/img/KIT-ALPHA.png'
 );
 
 -- Create a BOM for Kit Alpha
@@ -3461,6 +3716,158 @@ INSERT INTO bom_line (bom_id, item_id, quantity)
 VALUES
 ((SELECT bom_id FROM item WHERE sku = 'KIT-ALPHA'), 1, 1),  -- 1x Small A (item_id=1)
 ((SELECT bom_id FROM item WHERE sku = 'KIT-ALPHA'), 2, 2);  -- 2x Big B (item_id=
+
+
+-- Add a shipping fee item
+INSERT INTO item (name, description, sku, barcode, type, is_digital, is_assemblable, is_disassemblable, is_sellable, length, width, height, weight, volume) VALUES 
+('Shipping', 'Shipping Fee', 'SHIP-001', 'SHIP-001-BC', 'service', 1, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
+
+-- Carton Small
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id, image_url
+) VALUES (
+    'Carton Small', 'CARTON-S', 'CARTON-S-BC', 'product', 'small', 30, 20, 15, 350, 9000,
+    'Small shipping carton (30x20x15 cm), ideal for compact shipments.',
+    0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier'),
+    '/static/img/CARTON-S.png'
+);
+
+-- Carton Medium
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id, image_url
+) VALUES (
+    'Carton Medium', 'CARTON-M', 'CARTON-M-BC', 'product', 'big', 50, 30, 25, 600, 37500,
+    'Medium shipping carton (50x30x25 cm), suitable for most orders.',
+    0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier'),
+    '/static/img/CARTON-M.png'
+);
+
+-- Carton Large
+INSERT INTO item (
+    name, sku, barcode, type, size, length, width, height, weight, volume, description, is_sellable, is_assemblable, is_disassemblable, vendor_id, image_url
+) VALUES (
+    'Carton Large', 'CARTON-L', 'CARTON-L-BC', 'product', 'big', 80, 40, 40, 1200, 128000,
+    'Large shipping carton (80x40x40 cm), for bulky or multiple items.',
+    0, 0, 0, (SELECT id FROM partner WHERE name = 'Carton Supplier'),
+    '/static/img/CARTON-L.png'
+);
+
+-- Software
+INSERT INTO item (
+    name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url
+) VALUES (
+    'SuperApp Pro License',
+    'SW-PRO',
+    'SW-PRO-BC',
+    'digital',
+    NULL,
+    'License key for SuperApp Pro software. Instant delivery by email.',
+    1,    -- is_sellable
+    1,    -- is_digital
+    0,    -- is_assemblable
+    0,    -- is_disassemblable
+    '/static/img/SW-PRO.png'
+);
+
+-- Open Doors
+INSERT INTO item (
+    name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url
+) VALUES (
+    'OPEN DOORS',
+    'OD-001',
+    'OD-001-BC',
+    'service',
+    NULL,
+    'Company Opening Hours Abstraction.',
+    0,    -- is_sellable
+    1,    -- is_digital
+    0,    -- is_assemblable
+    0,    -- is_disassemblable
+    NULL
+);
+
+-- Seed service hours for AlpWolf GmbH (OD-001)
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time) VALUES
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Monday',    '08:00', '17:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Tuesday',   '08:00', '17:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Wednesday', '08:00', '17:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Thursday',  '08:00', '17:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Friday',    '08:00', '17:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Saturday',  '09:00', '13:00'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, 'Sunday',    NULL,    NULL);
+
+-- Seed service Exceptions for Alpwolf GmbH (OD-001)
+INSERT INTO service_exception (item_id, lot_id, start_datetime, end_datetime, description) VALUES
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, '2025-12-24 08:00:00', '2025-12-24 17:00:00', 'Christmas Eve'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, '2025-12-25 08:00:00', '2025-12-25 17:00:00', 'Christmas Day'),
+((SELECT id FROM item WHERE sku = 'OD-001'), NULL, '2025-12-31 08:00:00', '2025-12-31 17:00:00', 'New Years Eve');
+
+-- Seed a helper item for booking click & collect time slots
+INSERT INTO item (
+    name, sku, barcode, type, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url
+) VALUES (
+    'Click & Collect Service',
+    'CC-SLOT-001',
+    'CC-SLOT-001-BC',
+    'service',
+    'Helper item for booking click & collect pickup slots during checkout.',
+    0,    -- is_sellable
+    1,    -- is_digital
+    0,    -- is_assemblable
+    0,    -- is_disassemblable
+    '/static/img/click_collect.png'
+);
+
+-- Add service_hours for Click & Collect Service (CC-SLOT-001)
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Monday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Tuesday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Wednesday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Thursday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Friday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Saturday', '09:00', '14:00');
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Sunday', '09:00', '14:00');
+
+-- Seed service_window for the next 5 days, each with 10 available 30-minute slots from 09:00 to 14:00
+-- (You can adjust the slot count and times as needed)
+-- Use SQLite date/time functions for dynamic seeding
+
+-- For each day, create 10 slots
+INSERT INTO service_window (item_id, timedelta, unit_time, max_bookings, notes)
+SELECT
+    (SELECT id FROM item WHERE sku = 'CC-SLOT-001'),
+    30, 'minute', 1,
+    'Click & Collect slot for ' || date('now', '+' || d.day || ' days')
+FROM (
+    SELECT 0 AS day UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+) d;
+
+-- For each slot, create a service_booking record (unassigned, status 'pending')
+-- Each slot starts at 09:00 + n*30min, for n in 0..9 (where 09:00 + n*30min <= 13:30)
+INSERT INTO service_booking (item_id, service_window_id, start_datetime, status, notes)
+SELECT
+    (SELECT id FROM item WHERE sku = 'CC-SLOT-001'),
+    sw.id,
+    datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'),
+    'pending',
+    'Available Click & Collect slot for ' || date('now', '+' || d.day || ' days') || ' at ' || time(datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'))
+FROM (
+    SELECT 0 AS day UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+) d
+JOIN (
+    SELECT 0 AS slot UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9
+) n
+JOIN service_window sw ON sw.item_id = (SELECT id FROM item WHERE sku = 'CC-SLOT-001')
+    AND sw.notes LIKE '%' || date('now', '+' || d.day || ' days') || '%'
+WHERE time(datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'), '+30 minutes') <= '13:30:00';
+
 
 -- -- Seed currencies
 INSERT INTO currency (code, symbol, name) VALUES
@@ -3486,7 +3893,12 @@ INSERT INTO price_list (name, currency_id, valid_from, valid_to) VALUES
 INSERT INTO price_list_item (price_list_id, item_id, price) VALUES
 ((SELECT id FROM price_list WHERE name='Default EUR'), 1, 12.50),
 ((SELECT id FROM price_list WHERE name='Default EUR'), 2, 25.00),
-((SELECT id FROM price_list WHERE name='Default EUR'), 3, 75.95);
+((SELECT id FROM price_list WHERE name='Default EUR'), 3, 75.95),
+(
+    (SELECT id FROM price_list WHERE name='Default EUR'),
+    (SELECT id FROM item WHERE sku='SW-PRO'),
+    49.99
+);
 
 -- -- Seed lots for each item
 INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)
@@ -3600,12 +4012,14 @@ INSERT INTO dropshipping_policy (
 
 -- Small carton
 INSERT INTO packing_policy (
+    origin_model, origin_id,
     action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
     min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
     min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
     contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
     temperature_control, fragile, insurance_required, priority, active, notes
 ) VALUES (
+    NULL, NULL,
     (SELECT id FROM item WHERE sku = 'CARTON-S'),
     NULL, 30, NULL, 20,
     NULL, 15, NULL, 9000,
@@ -3617,12 +4031,14 @@ INSERT INTO packing_policy (
 
 -- Medium carton
 INSERT INTO packing_policy (
+    origin_model, origin_id,
     action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
     min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
     min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
     contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
     temperature_control, fragile, insurance_required, priority, active, notes
 ) VALUES (
+    NULL, NULL,
     (SELECT id FROM item WHERE sku = 'CARTON-M'),
     31, 50, 21, 30,
     16, 25, 9001, 37500,
@@ -3632,14 +4048,19 @@ INSERT INTO packing_policy (
     5, 1, 'Use medium carton if dimensions and weight fit'
 );
 
--- Large carton (fallback)
 INSERT INTO packing_policy (
-    action, min_cumulative_length, max_cumulative_length, min_cumulative_width, max_cumulative_width,
-    min_cumulative_height, max_cumulative_height, min_cumulative_volume, max_cumulative_volume,
-    min_cumulative_weight, max_cumulative_weight, min_cumulative_value, max_cumulative_value,
+    origin_model, origin_id,
+    action,
+    min_cumulative_length, max_cumulative_length,
+    min_cumulative_width, max_cumulative_width,
+    min_cumulative_height, max_cumulative_height,
+    min_cumulative_volume, max_cumulative_volume,
+    min_cumulative_weight, max_cumulative_weight,
+    min_cumulative_value, max_cumulative_value,
     contains_hazardous_type, carrier_id, shipping_method, recipient_id, sender_id,
     temperature_control, fragile, insurance_required, priority, active, notes
 ) VALUES (
+    NULL, NULL,
     (SELECT id FROM item WHERE sku = 'CARTON-L'),
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,

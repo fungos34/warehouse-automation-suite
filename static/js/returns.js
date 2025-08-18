@@ -243,6 +243,38 @@ document.addEventListener("DOMContentLoaded", async function() {
     }
 });
 
+
+document.addEventListener("DOMContentLoaded", function() {
+    const confirmBtn = document.getElementById("confirm-receipt-btn");
+    if (confirmBtn) {
+        confirmBtn.onclick = async function() {
+            // Get the order code from the page
+            const orderNumber = document.getElementById("order-number").textContent;
+            // Fetch the order to get its numeric ID
+            const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
+            if (!resp.ok) {
+                document.getElementById("confirm-receipt-result").textContent = "Order not found";
+                return;
+            }
+            const order = await resp.json();
+            const orderId = order.id;
+            // Build the correct unbuild order code
+            const unbuildOrderCode = `UO_PKG-sale_order-${orderId}`;
+            try {
+                const confirmResp = await fetch(`/unbuild-orders/${unbuildOrderCode}/confirm-receipt`, {
+                    method: "POST"
+                });
+                const data = await confirmResp.json();
+                document.getElementById("confirm-receipt-result").textContent = data.message || "Done!";
+                confirmBtn.classList.remove("pending");
+                confirmBtn.disabled = true;
+            } catch (e) {
+                document.getElementById("confirm-receipt-result").textContent = "Error confirming receipt";
+            }
+        };
+    }
+});
+
 // Example: Call Shippo address creation endpoint and show result
 document.getElementById('create-shippo-address-btn').onclick = async function() {
     try {
