@@ -508,6 +508,7 @@ body.shop-bg {
 .custom-checkbox {
     border-radius: 6px;
     border: 2px solid #4f8cff;
+    pointer-events: none;
 }
 
 .option-radio input[type="radio"]:checked ~ .custom-radio {
@@ -1556,4 +1557,194 @@ body.shop-bg {
     border-radius: 8px;
     background: #fff;
     box-shadow: 0 2px 8px rgba(80,140,255,0.08);
+}
+
+.privacy-banner {
+    font-size: 1rem;
+    color: #333;
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.07);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#accept-privacy-btn {
+    margin-left: auto;
+    margin-right: 18px;
+    display: block;
+}
+
+select#partner-country {
+    width: 97%;
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 2px solid #4f8cff;
+    background: #e0f7fa;
+    color: #00796b;
+    font-size: 1.08rem;
+    font-weight: 500;
+    margin-bottom: 10px;
+    transition: border 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(38,198,218,0.08);
+}
+select#partner-country:focus {
+    border-color: #38c6ff;
+    box-shadow: 0 4px 16px rgba(80,140,255,0.18);
+    outline: none;
+}
+/* Terms Checkbox Row - highlight when checked */
+.terms-checkbox-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: #e0f7fa;
+    border-radius: 8px;
+    padding: 22px 18px;
+    margin: 28px 0 0 0;
+    box-shadow: 0 2px 8px rgba(38,198,218,0.08);
+    font-size: 1.08rem;
+    color: #00796b;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s, border 0.2s;
+    user-select: none;
+    border: 2px solid transparent;
+}
+
+/* Highlight the whole container when checked */
+.terms-checkbox-row.checked {
+    background: #bbdefb;
+    border: 2px solid #4f8cff;
+    box-shadow: 0 6px 24px rgba(80,140,255,0.18);
+}
+
+/* Hide the native checkbox, but keep it accessible */
+.terms-checkbox-row input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+    width: 20px;
+    height: 20px;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+    z-index: 2;
+}
+
+/* Custom checkbox styling (tick stays as visual feedback) */
+.terms-checkbox-row .custom-checkbox {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 2px solid #4f8cff;
+    background: #fff;
+    display: inline-block;
+    position: relative;
+    margin-right: 8px;
+    transition: border 0.2s, background 0.2s;
+}
+
+.terms-checkbox-row input[type="checkbox"]:checked + .custom-checkbox {
+    background: #4f8cff;
+    border-color: #38c6ff;
+}
+
+.terms-checkbox-row .custom-checkbox:after {
+    content: "";
+    position: absolute;
+    display: none;
+}
+
+.terms-checkbox-row input[type="checkbox"]:checked + .custom-checkbox:after {
+    display: block;
+    left: 7px;
+    top: 3px;
+    width: 8px;
+    height: 14px;
+    border: solid #fff;
+    border-width: 0 4px 4px 0;
+    border-radius: 2px;
+    transform: rotate(45deg);
+}
+
+.terms-checkbox-row.field-error {
+    border: 2px solid #d32f2f !important;
+    box-shadow: 0 0 0 2px #ffcdd2;
+}
+
+/* Style for phone country code dropdown to match other input fields */
+#partner-phone-country,
+#partner-billing-phone-country {
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 2px solid #4f8cff;
+    background: #e0f7fa;
+    color: #00796b;
+    font-weight: 500;
+    margin-bottom: 10px;
+    transition: border 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(38,198,218,0.08);
+    width: 120px; /* was 90px */
+    min-width: 90px;
+    max-width: 160px;
+    font-size: 1rem; /* was 1.08rem */
+    width: 120px;
+}
+
+#partner-phone-country:focus,
+#partner-billing-phone-country:focus {
+    border-color: #38c6ff;
+    box-shadow: 0 4px 16px rgba(80,140,255,0.18);
+    outline: none;
+}
+
+/* Confirm Receipt Popup Style */
+#confirm-receipt-popup {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    background: #e3f7ff;
+    color: #1565c0;
+    border: 2px solid #90caf9;
+    border-radius: 8px;
+    box-shadow: 0 4px 24px rgba(33,150,243,0.12);
+    padding: 16px 24px;
+    font-size: 1.08rem;
+    font-weight: 500;
+    z-index: 9999;
+    display: none;
+    min-width: 220px;
+    max-width: 420px;
+    text-align: center;
+    animation: fadeIn 0.4s;
+}
+#confirm-receipt-popup button {
+    background: none;
+    border: none;
+    color: #1565c0;
+    font-size: 1.4em;
+    font-weight: bold;
+    cursor: pointer;
+    vertical-align: middle;
+    margin-left: 8px;
+}
+
+select#partner-billing-country {
+    width: 97%;
+    padding: 9px 14px;
+    border-radius: 6px;
+    border: 2px solid #4f8cff;
+    background: #e0f7fa;
+    color: #00796b;
+    font-size: 1.08rem;
+    font-weight: 500;
+    margin-bottom: 10px;
+    transition: border 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(38,198,218,0.08);
+}
+select#partner-billing-country:focus {
+    border-color: #38c6ff;
+    box-shadow: 0 4px 16px rgba(80,140,255,0.18);
+    outline: none;
 }

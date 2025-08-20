@@ -137,9 +137,17 @@
                           <input id="partner-email" placeholder="Email" required>
                           <span class="required-marker">*</span>
                         </div>
+                        <!-- shop.html, inside shipping and billing address blocks -->
                         <div class="input-row">
-                          <input id="partner-phone" placeholder="Phone" required>
-                          <span class="required-marker">*</span>
+                            <select id="partner-phone-country" required style="width:90px;">
+                                <option value="">Code</option>
+                                <option value="+43">+43 AT</option>
+                                <option value="+49">+49 DE</option>
+                                <option value="+33">+33 FR</option>
+                                <!-- Add more codes as needed -->
+                            </select>
+                            <input id="partner-phone" placeholder="Phone number" required style="width:calc(100% - 100px);">
+                            <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
                           <input id="partner-street" placeholder="Street" required>
@@ -154,7 +162,14 @@
                           <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
-                          <input id="partner-country" placeholder="Country" required>
+                          <select id="partner-country" required>
+                            <option>select country</option>
+                            <option value="AT">Austria</option>
+                            <option value="FR">France</option>
+                            <option value="DE">Germany</option>
+                            <option value="GH">Ghana</option>
+                          </select>
+                          <!-- <input id="partner-country" placeholder="Country" required> -->
                           <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
@@ -192,8 +207,15 @@
                           <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
-                          <input id="partner-billing-phone" placeholder="Billing Phone" required>
-                          <span class="required-marker">*</span>
+                            <select id="partner-billing-phone-country" required style="width:90px;">
+                                <option value="">Code</option>
+                                <option value="+43">+43 AT</option>
+                                <option value="+49">+49 DE</option>
+                                <option value="+33">+33 FR</option>
+                                <!-- Add more codes as needed -->
+                            </select>
+                            <input id="partner-billing-phone" placeholder="Billing phone number" required style="width:calc(100% - 100px);">
+                            <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
                           <input id="partner-billing-street" placeholder="Billing Street" required>
@@ -208,7 +230,13 @@
                           <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
-                          <input id="partner-billing-country" placeholder="Billing Country" required>
+                          <select id="partner-billing-country" required>
+                            <option>select country</option>
+                            <option value="AT">Austria</option>
+                            <option value="FR">France</option>
+                            <option value="DE">Germany</option>
+                            <option value="GH">Ghana</option>
+                          </select>
                           <span class="required-marker">*</span>
                         </div>
                         <div class="input-row">
@@ -261,11 +289,19 @@
           </div>
         </div>
 
-        
+        <!-- Add terms and conditions checkbox -->            
+        <div class="terms-checkbox-row option-checkbox" id="terms-checkbox-container" style="position:relative;">
+            <input type="checkbox" id="accept-terms" required>
+            <label for="accept-terms">
+                I accept the <a href="/terms" target="_blank">Terms & Conditions</a>
+                and <a href="/privacy-policy" target="_blank">Privacy Policy</a>.
+            </label>
+        </div>
 
         <!-- Customer Form -->
         <div id="customer-form">
           <form id="partner-form">
+
             <div class="action-row" id="address-action-row">
               <button id="confirm-data-btn" class="shop-buy-btn">
                 <i class="fas fa-check-circle"></i> Confirm Data
@@ -274,6 +310,8 @@
                 <i class="fas fa-times-circle"></i> Cancel
               </button>
             </div>
+
+
           </form>
         </div>
       </div>
@@ -342,5 +380,12 @@
   <script src="/static/js/returns.js"></script>
   <script src="/static/js/customer.js"></script>
 
+  <div id="privacy-banner" class="privacy-banner" style="position:fixed;bottom:0;left:0;width:100%;background:#fffbe6;border-top:1px solid #ffe082;padding:16px;z-index:9999;display:none;">
+    <button id="accept-privacy-btn">Accept</button>
+    <span>
+        To evaluate shipping options, pricing, currency, taxes, and service availability, we collect your IP address and location. This information helps us fulfill all legal responsibilities for online businesses and provide you with accurate offers and services
+        Please review our <a href="/privacy-policy" target="_blank">Privacy Policy</a> and <a href="/terms" target="_blank">Terms & Conditions</a>.
+    </span>
+  </div>
 </body>
 </html>

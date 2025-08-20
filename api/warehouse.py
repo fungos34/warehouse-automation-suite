@@ -2,14 +2,14 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Respons
 from database import get_conn
 from models import (
     TransferOrderCreate, TransferOrderLineIn,
-    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate, LotCreate, CompanyCreate, BookingRequest
+    ActionEnum, OperationTypeEnum, StockAdjustmentIn, ManufacturingOrderCreate, LotCreate, CompanyCreate, BookingRequest, ServiceBookingCreate, SubscriptionCreate
 )
+from datetime import datetime, timedelta
 from fastapi.responses import JSONResponse
 import requests
 from auth import get_current_username
 from typing import List
 import uuid
-import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
@@ -353,11 +353,9 @@ def get_item_vendor(item_id: int):
             raise HTTPException(status_code=404, detail="Vendor not found for this item")
         return {"vendor_id": row["vendor_id"]}
 
-
 @router.get("/items", tags=["Catalog"])
-def get_items(): # username: str = Depends(get_current_username)
+def get_items():
     with get_conn() as conn:
-        # Get the current price list (for sales price)
         price_list = conn.execute("""
             SELECT id, currency_id FROM price_list
             WHERE date('now') BETWEEN IFNULL(valid_from, date('now')) AND IFNULL(valid_to, date('now'))
@@ -376,13 +374,17 @@ def get_items(): # username: str = Depends(get_current_username)
                 i.is_digital,
                 i.is_assemblable,
                 i.is_disassemblable,
-                i.description,           -- <-- Add this line
+                i.description,
+                i.service_window_id,
+                sw.timedelta AS window_period,
+                sw.unit_time AS window_unit,
                 cost_cur.code AS cost_currency_code,
                 i.cost_currency_id,
                 pli.price AS sales_price,
                 sales_cur.code AS sales_currency_code,
-                i.image_url              -- <-- Add this line if you want images too
+                i.image_url
             FROM item i
+            LEFT JOIN service_window sw ON i.service_window_id = sw.id
             LEFT JOIN currency cost_cur ON i.cost_currency_id = cost_cur.id
             LEFT JOIN price_list_item pli ON pli.item_id = i.id {"AND pli.price_list_id = ?" if price_list_id else ""}
             LEFT JOIN price_list pl ON pli.price_list_id = pl.id
@@ -390,7 +392,7 @@ def get_items(): # username: str = Depends(get_current_username)
             ORDER BY i.id
         """, (price_list_id,) if price_list_id else ()).fetchall()
         return [dict(row) for row in result]
-
+    
 
 @router.get("/items/by-sku/{sku}", tags=["Catalog"])
 def get_item_by_sku(sku: str):
@@ -515,13 +517,81 @@ def book_service_booking(booking_id: int, req: BookingRequest):
         return {"message": "Booking confirmed"}
 
 
+
+# @router.post("/service-bookings", tags=["Service"])
+# def create_service_booking(data: ServiceBookingCreate):
+#     with get_conn() as conn:
+#         window = conn.execute(
+#             "SELECT timedelta, unit_time FROM service_window WHERE id=?",
+#             (data.service_window_id,)
+#         ).fetchone()
+#         if not window:
+#             raise HTTPException(status_code=404, detail="Service window not found")
+#         start = datetime.fromisoformat(data.start_datetime) if data.start_datetime else datetime.now()
+#         if window["unit_time"] == "month":
+#             end = start + timedelta(days=30)
+#         elif window["unit_time"] == "year":
+#             end = start + timedelta(days=365)
+#         else:
+#             # fallback: use timedelta as days
+#             end = start + timedelta(**{window["unit_time"] + "s": window["timedelta"]})
+#         cur = conn.execute(
+#             "INSERT INTO service_booking (partner_id, item_id, service_window_id, start_datetime, end_datetime, status) VALUES (?, ?, ?, ?, ?, 'confirmed')",
+#             (data.partner_id, data.item_id, data.service_window_id, start.isoformat(), end.isoformat())
+#         )
+#         conn.commit()
+#         return {
+#             "booking_id": cur.lastrowid,
+#             "start_datetime": start.isoformat(),
+#             "end_datetime": end.isoformat()
+#         }
+
+def parse_iso_datetime(dt_str):
+    if dt_str.endswith('Z'):
+        dt_str = dt_str[:-1]
+    if '.' in dt_str:
+        dt_str = dt_str.split('.')[0]
+    return datetime.fromisoformat(dt_str)
+
+@router.post("/subscriptions", tags=["Service"])
+def create_subscription(data: SubscriptionCreate):
+    with get_conn() as conn:
+        window = conn.execute(
+            "SELECT timedelta, unit_time FROM service_window WHERE id=?",
+            (data.service_window_id,)
+        ).fetchone()
+        if not window:
+            raise HTTPException(status_code=404, detail="Service window not found")
+        start = parse_iso_datetime(data.start_date) if data.start_date else datetime.now()
+        # Calculate end date based on window
+        if window["unit_time"] == "month":
+            end = start + timedelta(days=30 * window["timedelta"])
+        elif window["unit_time"] == "year":
+            end = start + timedelta(days=365 * window["timedelta"])
+        elif window["unit_time"] == "day":
+            end = start + timedelta(days=window["timedelta"])
+        elif window["unit_time"] == "week":
+            end = start + timedelta(weeks=window["timedelta"])
+        else:
+            end = start
+        cur = conn.execute(
+            "INSERT INTO subscription (item_id, partner_id, service_window_id, start_date, end_date, lot_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (data.item_id, data.partner_id, data.service_window_id, start.date().isoformat(), end.date().isoformat(), getattr(data, "lot_id", None))
+        )
+        conn.commit()
+        return {
+            "subscription_id": cur.lastrowid,
+            "start_date": start.date().isoformat(),
+            "end_date": end.date().isoformat()
+        }
+
 @router.post("/stock-adjustments/", tags=["Warehouse"])
-def add_stock_adjustment(item_id: int, location_id: int, delta: int, reason: str, username: str = Depends(get_current_username)):
+def add_stock_adjustment(data: StockAdjustmentIn, username: str = Depends(get_current_username)):
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO stock_adjustment (item_id, location_id, delta, reason)
             VALUES (?, ?, ?, ?)
-        """, (item_id, location_id, delta, reason))
+        """, (data.item_id, data.location_id, data.delta, data.reason))
         conn.commit()
     return {"message": "Stock adjusted"}
 
@@ -690,8 +760,8 @@ def create_manufacturing_order(
     username: str = Depends(get_current_username)
 ):
     code = f"MO-{uuid.uuid4().hex[:8].upper()}"
-    planned_start = data.planned_start or datetime.datetime.now().isoformat()
-    planned_end = data.planned_end or (datetime.datetime.now() + datetime.timedelta(days=1)).isoformat()
+    planned_start = data.planned_start or datetime.now().isoformat()
+    planned_end = data.planned_end or (datetime.now() + datetime.timedelta(days=1)).isoformat()
     with get_conn() as conn:
         # Get partner_id for current user
         partner_row = conn.execute(
@@ -862,7 +932,7 @@ def download_manufacturing_order_pdf(mo_id: int, username: str = Depends(get_cur
     elements.append(Spacer(1, 12))
 
     # MO Info
-    elements.append(Paragraph(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
+    elements.append(Paragraph(f"Date: {datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
     elements.append(Paragraph(f"<b>Manufacturing Order {mo['code']}</b>", styles["Title"]))
     elements.append(Paragraph(f"Status: {mo['status']}", styles["Normal"]))
     elements.append(Paragraph(f"Product: {mo['item_name']} (SKU: {mo['sku']})", styles["Normal"]))
@@ -1029,7 +1099,7 @@ def download_manufacturing_receipt_pdf(mo_id: int, username: str = Depends(get_c
     elements.append(Spacer(1, 12))
 
     # MO Info
-    elements.append(Paragraph(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
+    elements.append(Paragraph(f"Date: {datetime.now().strftime('%Y-%m-%d')}", styles["Normal"]))
     elements.append(Paragraph(f"<b>Manufacturing Order {mo['code']}</b>", styles["Heading2"]))
     elements.append(Paragraph(f"Status: {mo['status']}", styles["Normal"]))
     elements.append(Paragraph(f"Product: {mo['item_name']} (SKU: {mo['sku']})", styles["Normal"]))

@@ -22,12 +22,40 @@ CREATE TABLE IF NOT EXISTS bom_line (
     FOREIGN KEY(lot_id) REFERENCES lot(id)
 );
 
+CREATE TABLE IF NOT EXISTS hs_code (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,       -- e.g. '847130'
+    description TEXT NOT NULL        -- e.g. 'Portable automatic data processing machines, computers'
+);
+
+CREATE TABLE IF NOT EXISTS item_hs_country (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    hs_code_id INTEGER NOT NULL,
+    country_id INTEGER NOT NULL, -- Herkunftsland
+    UNIQUE(item_id, country_id),
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(hs_code_id) REFERENCES hs_code(id),
+    FOREIGN KEY(country_id) REFERENCES country(id)
+);
+
+CREATE TABLE IF NOT EXISTS hs_country_tax (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hs_code_id INTEGER NOT NULL,
+    country_id INTEGER NOT NULL, -- Lieferland
+    tax_id INTEGER NOT NULL,     -- jede Art von Steuer
+    FOREIGN KEY(hs_code_id) REFERENCES hs_code(id),
+    FOREIGN KEY(country_id) REFERENCES country(id),
+    FOREIGN KEY(tax_id) REFERENCES tax(id)
+);
+
 -- Currency Table
 CREATE TABLE IF NOT EXISTS currency (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT UNIQUE NOT NULL,         -- e.g. 'EUR', 'USD'
     symbol TEXT NOT NULL,              -- e.g. '€', '$'
-    name TEXT NOT NULL                 -- e.g. 'Euro', 'US Dollar'
+    name TEXT NOT NULL,                 -- e.g. 'Euro', 'US Dollar'
+    rel_to_usd REAL NOT NULL            -- e.g. 1.0
 );
 
 -- Tax Table
@@ -35,7 +63,8 @@ CREATE TABLE IF NOT EXISTS tax (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     percent REAL NOT NULL,         -- e.g. 19.0 for 19%
-    description TEXT
+    description TEXT,
+    label TEXT
 );
 
 -- Discount Table
@@ -54,7 +83,9 @@ CREATE TABLE IF NOT EXISTS price_list (
     currency_id INTEGER NOT NULL,
     valid_from DATE,
     valid_to DATE,
-    FOREIGN KEY(currency_id) REFERENCES currency(id)
+    country_id INTEGER,
+    FOREIGN KEY(currency_id) REFERENCES currency(id),
+    FOREIGN KEY(country_id) REFERENCES country(id)
 );
 
 -- Price List Item Table
@@ -62,7 +93,7 @@ CREATE TABLE IF NOT EXISTS price_list_item (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     price_list_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
-    price REAL NOT NULL,
+    price REAL NOT NULL, -- net price
     FOREIGN KEY(price_list_id) REFERENCES price_list(id),
     FOREIGN KEY(item_id) REFERENCES item(id)
 );
@@ -93,11 +124,13 @@ CREATE TABLE IF NOT EXISTS item (
     is_sellable INTEGER DEFAULT 1 CHECK(is_sellable IN (0,1)), -- whether this item is sold
     is_assemblable INTEGER DEFAULT 0 CHECK(is_assemblable IN (0,1)),
     is_disassemblable INTEGER DEFAULT 0 CHECK(is_disassemblable IN (0,1)),
+    service_window_id INTEGER,
     FOREIGN KEY(route_id) REFERENCES route(id),
     FOREIGN KEY(vendor_id) REFERENCES partner(id),
     FOREIGN KEY(cost_currency_id) REFERENCES currency(id),
     FOREIGN KEY(purchase_currency_id) REFERENCES currency(id),
-    FOREIGN KEY(bom_id) REFERENCES bom(id)
+    FOREIGN KEY(bom_id) REFERENCES bom(id),
+    FOREIGN KEY(service_window_id) REFERENCES service_window(id)
 );
 
 -- Create lot
@@ -132,13 +165,38 @@ CREATE TABLE IF NOT EXISTS carrier_label (
     FOREIGN KEY(lot_id) REFERENCES lot(id)
 );
 
+CREATE TABLE IF NOT EXISTS country (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,       -- e.g. 'DE', 'AT', 'CH', 'BA'
+    name TEXT NOT NULL,              -- e.g. 'Germany', 'Austria'
+    official_name TEXT,              -- e.g. 'Federal Republic of Germany'
+    eu_member INTEGER NOT NULL DEFAULT 0 CHECK(eu_member IN (0,1)), -- EU flag
+    currency_id INTEGER,             -- default currency of the country
+    vat_standard INTEGER,               -- optional default VAT %
+    region TEXT,                     -- e.g. 'Europe', 'Asia'
+    phone_code TEXT,                 -- e.g. '+49', '+43'
+    language_id INTEGER,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    FOREIGN KEY(currency_id) REFERENCES currency(id),
+    FOREIGN KEY(vat_standard) REFERENCES tax(id),
+    FOREIGN KEY(language_id) REFERENCES language(id)
+);
+
+CREATE TABLE IF NOT EXISTS language (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE NOT NULL,       -- e.g. 'en', 'de', 'fr', 'bs'
+    name TEXT NOT NULL,              -- e.g. 'English', 'German'
+    native_name TEXT,                -- e.g. 'Deutsch', 'English'
+    rtl INTEGER NOT NULL DEFAULT 0 CHECK(rtl IN (0,1))  -- Right-to-left flag (e.g. Arabic/Hebrew)
+);
+
 -- Create partner
 CREATE TABLE IF NOT EXISTS partner (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     street TEXT NOT NULL,
     city TEXT NOT NULL,
-    country TEXT NOT NULL,
+    country_id INTEGER NOT NULL,
     zip TEXT NOT NULL,
     email TEXT,
     phone TEXT,
@@ -146,12 +204,16 @@ CREATE TABLE IF NOT EXISTS partner (
     billing_name TEXT,
     billing_street TEXT,
     billing_city TEXT,
-    billing_country TEXT,
+    billing_country_id INTEGER,
     billing_zip TEXT,
     billing_email TEXT,
     billing_phone TEXT,
     billing_notes TEXT,
-    partner_type TEXT CHECK (partner_type IN ('vendor','customer','employee','carrier')) NOT NULL DEFAULT 'customer'
+    partner_type TEXT CHECK (partner_type IN ('vendor','customer','employee','carrier')) NOT NULL DEFAULT 'customer',
+    language_id INTEGER,
+    FOREIGN KEY (country_id) REFERENCES country(id),
+    FOREIGN KEY (billing_country_id) REFERENCES country(id),
+    FOREIGN KEY (language_id) REFERENCES language(id)
 );
 
 
@@ -179,15 +241,11 @@ CREATE TABLE service_exception (
 
 CREATE TABLE IF NOT EXISTS service_window (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER NOT NULL,
-    lot_id INTEGER,
     timedelta INTEGER NOT NULL,          -- Duration of the service window
     unit_time TEXT CHECK (unit_time IN ('second', 'minute', 'hour', 'day', 'week', 'month', 'year')) NOT NULL,
-    max_bookings INTEGER DEFAULT 1,      -- How many bookings allowed for this window
+    max_bookings INTEGER DEFAULT NULL,      -- How many bookings allowed for this window
     current_bookings INTEGER DEFAULT 0,  -- Updated as bookings are made
-    notes TEXT,
-    FOREIGN KEY(item_id) REFERENCES item(id),
-    FOREIGN KEY(lot_id) REFERENCES lot(id)
+    notes TEXT
 );
 
 CREATE TABLE IF NOT EXISTS service_booking (
@@ -204,6 +262,26 @@ CREATE TABLE IF NOT EXISTS service_booking (
     FOREIGN KEY(partner_id) REFERENCES partner(id),
     FOREIGN KEY(service_window_id) REFERENCES service_window(id)
 );
+
+CREATE TABLE IF NOT EXISTS payment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_id INTEGER NOT NULL,
+    origin_model TEXT CHECK(origin_model IN (
+        'sale_order', 'purchase_order', 'service_booking', 'subscription', 'return_order', 'other'
+    )) NOT NULL,
+    origin_id INTEGER NOT NULL,
+    service_booking_id INTEGER,    -- direct link to service_booking if applicable
+    amount REAL NOT NULL,
+    currency_id INTEGER NOT NULL,
+    payment_method TEXT,           -- e.g. 'stripe', 'paypal', 'bank_transfer'
+    status TEXT CHECK(status IN ('pending','completed','failed','cancelled')) DEFAULT 'pending',
+    transaction_reference TEXT,    -- e.g. Stripe session ID
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(partner_id) REFERENCES partner(id),
+    FOREIGN KEY(service_booking_id) REFERENCES service_booking(id),
+    FOREIGN KEY(currency_id) REFERENCES currency(id)
+);
+
 
 -- Create company
 CREATE TABLE IF NOT EXISTS company (
@@ -230,20 +308,20 @@ CREATE TABLE IF NOT EXISTS user (
     FOREIGN KEY(company_id) REFERENCES company(id)
 );
 
+DROP TABLE IF EXISTS subscription;
 CREATE TABLE IF NOT EXISTS subscription (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id INTEGER NOT NULL,
     lot_id INTEGER,
     partner_id INTEGER NOT NULL,
+    service_window_id INTEGER NOT NULL,
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
-    billing_cycle TEXT CHECK(billing_cycle IN ('daily', 'weekly', 'monthly', 'yearly')),
-    next_invoice_date DATE,
-    status TEXT CHECK(status IN ('active', 'cancelled', 'expired')) DEFAULT 'active',
     terms_conditions BLOB,     -- terms and conditions as a BLOB (e.g. PDF)
     FOREIGN KEY(item_id) REFERENCES item(id),
     FOREIGN KEY(partner_id) REFERENCES partner(id),
-    FOREIGN KEY(lot_id) REFERENCES lot(id)
+    FOREIGN KEY(lot_id) REFERENCES lot(id),
+    FOREIGN KEY(service_window_id) REFERENCES service_window(id)
 );
 
 
@@ -2526,7 +2604,8 @@ BEGIN
         WHERE po.status = 'draft'
         AND po.partner_id = (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id))
     )
-    AND (SELECT is_assemblable FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0;
+    AND (SELECT is_assemblable FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) = 0
+    AND (SELECT vendor_id FROM item WHERE id = (SELECT trigger_item_id FROM "trigger" WHERE id = NEW.trigger_id)) IS NOT NULL;
 
     UPDATE purchase_order_line
     SET quantity = quantity + (SELECT trigger_item_quantity FROM "trigger" WHERE id = NEW.trigger_id)
@@ -2560,19 +2639,23 @@ BEGIN
     FROM "trigger" t
     JOIN item i ON i.id = t.trigger_item_id
     WHERE t.id = NEW.trigger_id
-      AND NOT EXISTS (
-        SELECT 1 FROM purchase_order_line pol
-        WHERE pol.purchase_order_id = (
-                SELECT id FROM purchase_order
-                WHERE status = 'draft'
-                AND partner_id = (SELECT vendor_id FROM item WHERE id = t.trigger_item_id)
-                ORDER BY id DESC LIMIT 1
-            )
-          AND pol.item_id = t.trigger_item_id
-          AND IFNULL(pol.lot_id, -1) = IFNULL(t.trigger_lot_id, -1)
-          AND pol.route_id = t.trigger_route_id
-      )
-      AND i.is_assemblable = 0;
+        AND NOT EXISTS (
+            SELECT 1 FROM purchase_order_line pol
+            WHERE pol.purchase_order_id = (
+                    SELECT id FROM purchase_order
+                    WHERE status = 'draft'
+                    AND partner_id = (SELECT vendor_id FROM item WHERE id = t.trigger_item_id)
+                    ORDER BY id DESC LIMIT 1
+                )
+            AND pol.item_id = t.trigger_item_id
+            AND IFNULL(pol.lot_id, -1) = IFNULL(t.trigger_lot_id, -1)
+            AND pol.route_id = t.trigger_route_id
+        )
+        AND i.is_assemblable = 0
+        AND (SELECT id FROM purchase_order
+            WHERE status = 'draft'
+            AND partner_id = (SELECT vendor_id FROM item WHERE id = t.trigger_item_id)
+            ORDER BY id DESC LIMIT 1) IS NOT NULL;
 END;
 
 
@@ -3597,55 +3680,111 @@ WHERE code GLOB 'LOC_J?_*' OR code GLOB 'LOC_K?_*' OR code GLOB 'LOC_M?_*' OR co
 INSERT INTO location_zone (location_id, zone_id)
 SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE code IN ('LOC_PROD_1', 'LOC_PROD_2', 'LOC_PROD_3', 'LOC_PROD_4');
 
+-- Seed currencies (if not already present)
+INSERT OR IGNORE INTO currency (code, symbol, name, rel_to_usd) VALUES
+('USD', '$', 'US Dollar', 1.16),
+('EUR', '€', 'Euro', 1.0),
+('CHF', 'CHF', 'Swiss Franc', 0.94),
+('BAM', 'KM', 'Bosnia and Herzegovina Convertible Mark', 1.96),
+('GBP', '£', 'Pound Sterling', 0.86);
+
+-- Seed languages (if not already present)
+INSERT OR IGNORE INTO language (code, name, native_name) VALUES
+('de', 'German', 'Deutsch'),
+('fr', 'French', 'Français'),
+('bs', 'Bosnian', 'Bosanski');
+
+-- Seed taxes (if not already present)
+INSERT OR IGNORE INTO tax (name, percent, description) VALUES
+('DE Standard VAT', 19.0, 'Standard VAT for Germany'),
+('AT Standard VAT', 20.0, 'Standard VAT for Austria'),
+('CH Standard VAT', 7.7, 'Standard VAT for Switzerland'),
+('BA Standard VAT', 17.0, 'Standard VAT for Bosnia and Herzegovina');
+
+-- Seed countries
+INSERT OR IGNORE INTO country (
+    code, name, official_name, eu_member, currency_id, vat_standard, region, phone_code, language_id, active
+) VALUES
+('DE', 'Germany', 'Federal Republic of Germany', 1,
+    (SELECT id FROM currency WHERE code='EUR'),
+    (SELECT id FROM tax WHERE name='DE Standard VAT'),
+    'Europe', '+49',
+    (SELECT id FROM language WHERE code='de'), 1
+),
+('AT', 'Austria', 'Republic of Austria', 1,
+    (SELECT id FROM currency WHERE code='EUR'),
+    (SELECT id FROM tax WHERE name='AT Standard VAT'),
+    'Europe', '+43',
+    (SELECT id FROM language WHERE code='de'), 1
+),
+('CH', 'Switzerland', 'Swiss Confederation', 0,
+    (SELECT id FROM currency WHERE code='CHF'),
+    (SELECT id FROM tax WHERE name='CH Standard VAT'),
+    'Europe', '+41',
+    (SELECT id FROM language WHERE code='de'), 1
+),
+('BA', 'Bosnia and Herzegovina', 'Bosnia and Herzegovina', 0,
+    (SELECT id FROM currency WHERE code='BAM'),
+    (SELECT id FROM tax WHERE name='BA Standard VAT'),
+    'Europe', '+387',
+    (SELECT id FROM language WHERE code='bs'), 1
+);
 
 -- Partners (add more vendors)
 INSERT INTO partner (
-    name, street, city, country, zip,
+    name, street, city, country_id, zip,
     email, phone, notes,
-    billing_name, billing_street, billing_city, billing_country, billing_zip,
+    billing_name, billing_street, billing_city, billing_country_id, billing_zip,
     billing_email, billing_phone, billing_notes,
-    partner_type
+    partner_type, language_id
 ) VALUES
-('Supplier A', 'Supplier St 1', 'Supplier City', 'CountryX', '1000',
+('Supplier A', 'Supplier St 1', 'Supplier City', 2, '1000',
     'supplierA@example.com', '123456789', 'Preferred vendor',
-    'Supplier A Billing', 'Supplier Billing St 1', 'Supplier Billing City', 'CountryX', '1001',
+    'Supplier A Billing', 'Supplier Billing St 1', 'Supplier Billing City', 2, '1001',
     'billingA@example.com', '123456789', 'Billing contact for Supplier A',
-    'vendor'),
-('Supplier B', 'Supplier St 2', 'Supplier City', 'CountryX', '1002',
+    'vendor', (SELECT id FROM language WHERE code='de')
+),
+('Supplier B', 'Supplier St 2', 'Supplier City', 1, '1002',
     'supplierB@example.com', '223456789', '',
-    'Supplier B Billing', 'Supplier Billing St 2', 'Supplier Billing City', 'CountryX', '1003',
+    'Supplier B Billing', 'Supplier Billing St 2', 'Supplier Billing City', 1, '1003',
     'billingB@example.com', '223456789', 'Billing contact for Supplier B',
-    'vendor'),
-('Carrier C', 'Carrier Rd 10', 'Carrier City', 'CountryX', '2000',
+    'vendor', (SELECT id FROM language WHERE code='de')
+),
+('Carrier C', 'Carrier Rd 10', 'Carrier City', 1, '2000',
     'carrier@example.com', '987654321', '',
-    'Carrier C Billing', 'Carrier Billing Rd 10', 'Carrier Billing City', 'CountryX', '2001',
+    'Carrier C Billing', 'Carrier Billing Rd 10', 'Carrier Billing City', 1, '2001',
     'billingC@example.com', '987654321', 'Billing contact for Carrier C',
-    'carrier'),
-('Customer B', 'Customer Ave 5', 'Customer City', 'CountryX', '3000',
+    'carrier', (SELECT id FROM language WHERE code='de')
+),
+('Customer B', 'Customer Ave 5', 'Customer City', 1, '3000',
     'customer@example.com', '555555555', '',
-    'Customer B Billing', 'Customer Billing Ave 5', 'Customer Billing City', 'CountryX', '3001',
+    'Customer B Billing', 'Customer Billing Ave 5', 'Customer Billing City', 1, '3001',
     'billing.customer@example.com', '555555555', 'Billing contact for Customer B',
-    'customer'),
-('Owner A', 'Frikusweg 10', 'Kalsdorf bei Graz', 'Austria', '8401',
+    'customer', (SELECT id FROM language WHERE code='de')
+),
+('Owner A', 'Frikusweg 10', 'Kalsdorf bei Graz', 1, '8401',
     'owner@example.com', '111222333', '',
-    'Owner A Billing', 'Nußbaumerstraße 14', 'Graz', 'Austria', '8042',
+    'Owner A Billing', 'Nußbaumerstraße 14', 'Graz', 1, '8042',
     'billing.owner@example.com', '111222333', 'Billing contact for Owner A',
-    'employee'),
-('Employee E', 'Employee St 3', 'Employee City', 'CountryX', '4000',
+    'employee', (SELECT id FROM language WHERE code='de')
+),
+('Employee E', 'Employee St 3', 'Employee City', 1, '4000',
     'e@example.com', '444555666', '',
-    'Employee E Billing', 'Employee Billing St 3', 'Employee Billing City', 'CountryX', '4001',
+    'Employee E Billing', 'Employee Billing St 3', 'Employee Billing City', 1, '4001',
     'billing.e@example.com', '444555666', 'Billing contact for Employee E',
-    'employee'),
-('Carton Supplier', 'Carton St 10', 'Carton City', 'CountryX', '1010',
+    'employee', (SELECT id FROM language WHERE code='de')
+),
+('Carton Supplier', 'Carton St 10', 'Carton City', 3, '1010',
     'carton.supplier@example.com', '333444555', '',
-    'Carton Supplier Billing', 'Carton Billing St 10', 'Carton Billing City', 'CountryX', '1011',
+    'Carton Supplier Billing', 'Carton Billing St 10', 'Carton Billing City', 3, '1011',
     'billing.carton.supplier@example.com', '333444555', 'Billing contact for Carton Supplier',
-    'vendor');
+    'vendor', (SELECT id FROM language WHERE code='de')
+);
 
 -- Companies
 INSERT INTO company (partner_id, name, vat_number, logo_url, website)
 VALUES
-(5, 'AlpWolf GmbH', 'ATU12345678', '/static/img/AlpWolf_logo.png', 'https://www.alpwolf.com');
+(5, 'AlpWolf GmbH', 'ATU12345678', '/static/img/AlpWolf_logo.png', 'https://www.alpwolf.at');
 
 -- Users
 INSERT INTO user (partner_id, company_id, username, password_hash, image_url, role)
@@ -3769,6 +3908,17 @@ INSERT INTO item (
     '/static/img/SW-PRO.png'
 );
 
+-- For SuperApp Pro License (assuming item_id = X)
+INSERT INTO service_hours (item_id, lot_id, weekday, start_time, end_time)
+VALUES ((SELECT id FROM item WHERE sku = 'SW-PRO'), NULL, '24/7', '00:00:00', '23:59:59');
+
+-- Monthly window
+INSERT INTO service_window (timedelta, unit_time, max_bookings, notes)
+VALUES (1, 'month', NULL, 'Monthly license window');
+
+UPDATE item SET service_window_id = (SELECT id FROM service_window WHERE notes = 'Monthly license window')
+WHERE sku = 'SW-PRO';
+
 -- Open Doors
 INSERT INTO item (
     name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url
@@ -3838,46 +3988,88 @@ VALUES ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), NULL, 'Sunday', '09:00'
 -- (You can adjust the slot count and times as needed)
 -- Use SQLite date/time functions for dynamic seeding
 
--- For each day, create 10 slots
-INSERT INTO service_window (item_id, timedelta, unit_time, max_bookings, notes)
-SELECT
-    (SELECT id FROM item WHERE sku = 'CC-SLOT-001'),
-    30, 'minute', 1,
-    'Click & Collect slot for ' || date('now', '+' || d.day || ' days')
-FROM (
-    SELECT 0 AS day UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
-) d;
+-- one window per item
+INSERT INTO service_window (timedelta, unit_time, max_bookings, notes)
+VALUES (30, 'minute', 5, 'Click & Collect slots');
 
--- For each slot, create a service_booking record (unassigned, status 'pending')
--- Each slot starts at 09:00 + n*30min, for n in 0..9 (where 09:00 + n*30min <= 13:30)
-INSERT INTO service_booking (item_id, service_window_id, start_datetime, status, notes)
-SELECT
-    (SELECT id FROM item WHERE sku = 'CC-SLOT-001'),
-    sw.id,
-    datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'),
-    'pending',
-    'Available Click & Collect slot for ' || date('now', '+' || d.day || ' days') || ' at ' || time(datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'))
-FROM (
-    SELECT 0 AS day UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
-) d
-JOIN (
-    SELECT 0 AS slot UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
-    UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9
-) n
-JOIN service_window sw ON sw.item_id = (SELECT id FROM item WHERE sku = 'CC-SLOT-001')
-    AND sw.notes LIKE '%' || date('now', '+' || d.day || ' days') || '%'
-WHERE time(datetime(date('now', '+' || d.day || ' days') || ' 09:30:00', '+' || (n.slot * 30) || ' minutes'), '+30 minutes') <= '13:30:00';
+-- Assign the latest service_window to the item (repeat for each day if needed)
+UPDATE item
+SET service_window_id = (SELECT id FROM service_window ORDER BY id DESC LIMIT 1)
+WHERE sku = 'CC-SLOT-001';
 
+INSERT INTO service_booking (item_id, service_window_id, start_datetime, status, notes) VALUES
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+0 days') || ' 09:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+0 days') || ' at 09:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+1 days') || ' 09:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+1 days') || ' at 09:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+2 days') || ' 09:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+2 days') || ' at 09:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+3 days') || ' 09:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+3 days') || ' at 09:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+4 days') || ' 09:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+4 days') || ' at 09:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+0 days') || ' 10:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+0 days') || ' at 10:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+1 days') || ' 10:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+1 days') || ' at 10:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+2 days') || ' 10:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+2 days') || ' at 10:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+3 days') || ' 10:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+3 days') || ' at 10:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+4 days') || ' 10:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+4 days') || ' at 10:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+0 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+0 days') || ' at 11:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+1 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+1 days') || ' at 11:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+2 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+2 days') || ' at 11:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+3 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+3 days') || ' at 11:00'),
+((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+4 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+4 days') || ' at 11:00');
 
--- -- Seed currencies
-INSERT INTO currency (code, symbol, name) VALUES
-('EUR', '€', 'Euro'),
-('USD', '$', 'US Dollar');
+INSERT OR IGNORE INTO hs_code (code, description) VALUES
+('847130', 'Portable automatic data processing machines, computers'),
+('490199', 'Printed books, brochures, leaflets'),
+('852349', 'Software licenses, digital media');
 
--- -- Seed taxes
-INSERT INTO tax (name, percent, description) VALUES
-('Standard VAT', 19.0, 'Standard German VAT'),
-('Reduced VAT', 7.0, 'Reduced VAT for food/books');
+-- Item Small A (SKU001) as computer, all countries
+INSERT OR IGNORE INTO item_hs_country (item_id, hs_code_id, country_id) VALUES
+((SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE')),
+((SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='AT')),
+((SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='CH')),
+((SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='BA'));
+
+-- Item Big B (SKU002) as computer, all countries
+INSERT OR IGNORE INTO item_hs_country (item_id, hs_code_id, country_id) VALUES
+((SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE')),
+((SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='AT')),
+((SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='CH')),
+((SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='BA'));
+
+-- Kit Alpha (KIT-ALPHA) as computer, all countries
+INSERT OR IGNORE INTO item_hs_country (item_id, hs_code_id, country_id) VALUES
+((SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE')),
+((SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='AT')),
+((SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='CH')),
+((SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='BA'));
+
+-- SuperApp Pro License (SW-PRO) as software license, all countries
+INSERT OR IGNORE INTO item_hs_country (item_id, hs_code_id, country_id) VALUES
+((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='DE')),
+((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='AT')),
+((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='CH')),
+((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='BA'));
+
+-- For computers (HS_CODE_847130), standard VAT in each country
+INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE'), (SELECT id FROM tax WHERE name='DE Standard VAT')),
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='AT'), (SELECT id FROM tax WHERE name='AT Standard VAT')),
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='CH'), (SELECT id FROM tax WHERE name='CH Standard VAT')),
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='BA'), (SELECT id FROM tax WHERE name='BA Standard VAT'));
+
+-- For software licenses (HS_CODE_852349), standard VAT in each country
+INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
+((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='DE'), (SELECT id FROM tax WHERE name='DE Standard VAT')),
+((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='AT'), (SELECT id FROM tax WHERE name='AT Standard VAT')),
+((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='CH'), (SELECT id FROM tax WHERE name='CH Standard VAT')),
+((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='BA'), (SELECT id FROM tax WHERE name='BA Standard VAT'));
+
+-- Standard VAT for each country
+INSERT OR IGNORE INTO tax (name, percent, description, label) VALUES
+('DE Standard VAT', 19.0, 'Standard VAT for Germany', 'USt.'),
+('AT Standard VAT', 20.0, 'Standard VAT for Austria', 'MwSt.'),
+('CH Standard VAT', 7.7, 'Standard VAT for Switzerland', 'MWST/TVA/IVA'),
+('BA Standard VAT', 17.0, 'Standard VAT for Bosnia and Herzegovina', 'PDV'),
+('DE Reduced VAT', 7.0, 'Reduced VAT for Germany (books, food)', 'USt.'),
+('AT Reduced VAT', 10.0, 'Reduced VAT for Austria (food, books)', 'MwSt.'),
+('CH Reduced VAT', 2.5, 'Reduced VAT for Switzerland (food, books)', 'MWST/TVA/IVA');
 
 -- -- Seed discounts
 INSERT INTO discount (name, percent, amount, description) VALUES
@@ -3886,19 +4078,40 @@ INSERT INTO discount (name, percent, amount, description) VALUES
 ('Fixed 5 EUR', NULL, 5.0, '5 EUR off');
 
 -- -- Seed price list
-INSERT INTO price_list (name, currency_id, valid_from, valid_to) VALUES
-('Default EUR', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31');
+INSERT OR IGNORE INTO price_list (name, currency_id, valid_from, valid_to, country_id) VALUES
+('European Union EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='DE')),
+('European Union EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2026-01-01', '2026-12-31', (SELECT id FROM country WHERE code='AT')),
+('Switzerland CHF 2025', (SELECT id FROM currency WHERE code='CHF'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='CH')),
+('World BAM 2025', (SELECT id FROM currency WHERE code='BAM'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='BA'));
 
 -- -- Price list items
-INSERT INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Default EUR'), 1, 12.50),
-((SELECT id FROM price_list WHERE name='Default EUR'), 2, 25.00),
-((SELECT id FROM price_list WHERE name='Default EUR'), 3, 75.95),
-(
-    (SELECT id FROM price_list WHERE name='Default EUR'),
-    (SELECT id FROM item WHERE sku='SW-PRO'),
-    49.99
-);
+-- Example items for Germany
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), 12.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), 24.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 74.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 49.99);
+
+-- Example items for Austria
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), 13.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), 25.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 75.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 52.99);
+
+-- Example items for Switzerland
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU001'), 14.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU002'), 27.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 79.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 59.99);
+
+-- Example items for Bosnia
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU001'), 10.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU002'), 20.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 65.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 39.99);
 
 -- -- Seed lots for each item
 INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)

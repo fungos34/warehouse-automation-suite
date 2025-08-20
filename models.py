@@ -125,3 +125,15 @@ class CompanyCreate(BaseModel):
 
 class BookingRequest(BaseModel):
     partner_id: int
+
+class ServiceBookingCreate(BaseModel):
+    item_id: int
+    partner_id: int
+    service_window_id: int
+    start_datetime: Optional[str] = None
+
+class SubscriptionCreate(BaseModel):
+    item_id: int
+    partner_id: int
+    service_window_id: int
+    start_date: Optional[str] = None

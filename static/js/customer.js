@@ -55,7 +55,7 @@ async function loadItems() {
         }
         renderShopItems(sellableItems);
     } catch (e) {
-        document.getElementById('item-list').innerHTML = `<span style="color:red">Error loading items: ${e.message}</span>`;
+        showPartnerError(`Error loading items: ${e.message}`);
     }
 }
 
@@ -73,12 +73,16 @@ function renderCart() {
             ${Object.values(cart).map(item => {
                 const subtotal = item.price * item.qty;
                 total += subtotal;
+                let periodStr = '';
+                if (item.service_window_id && item.window_period && item.window_unit) {
+                    periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
+                }
                 return `
                     <div class="cart-item-card">
                         <div class="cart-item-title">${item.name}</div>
                         <div class="cart-item-meta">
                             <span class="cart-item-sku">SKU: ${item.sku || ''}</span>
-                            <span class="cart-item-price">${item.price} ${item.currency}</span>
+                            <span class="cart-item-price">${item.price} ${item.currency}${periodStr}</span>
                         </div>
                         <div class="cart-item-qty">
                             <label for="cart-qty-${item.id}" class="cart-qty-label">Quantity:</label>
@@ -96,11 +100,16 @@ function renderCart() {
     `;
 }
 
+
 // Example for item rendering in returns.js or a new shop.js
 function renderShopItems(items) {
     const grid = document.getElementById("item-list");
     grid.innerHTML = "";
     items.forEach(item => {
+        let periodStr = '';
+        if (item.service_window_id && item.window_period && item.window_unit) {
+            periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
+        }
         grid.innerHTML += `
             <div class="shop-item-card">
                 <div class="shop-item-image-wrap">
@@ -112,7 +121,7 @@ function renderShopItems(items) {
                     <span class="shop-item-sku">SKU: ${item.sku}</span>
                     ${item.stock !== undefined ? `<span class="shop-item-stock ${item.stock > 0 ? 'in-stock' : 'out-stock'}">${item.stock > 0 ? 'In stock' : 'Out of stock'}</span>` : ''}
                 </div>
-                <div class="shop-item-price">${item.sales_price ? '€' + Number(item.sales_price).toFixed(2) : ''}</div>
+                <div class="shop-item-price">${item.sales_price ? '€' + Number(item.sales_price).toFixed(2) : ''}${periodStr}</div>
                 <button class="shop-item-add-btn" onclick="addToCart(${item.id}, '${item.name.replace(/'/g, "\\'")}', ${item.sales_price || 0}, '${item.sales_currency_code || ''}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1}, '${item.sku || ''}', ${item.is_digital ? 'true' : 'false'})">
                     <i class="fas fa-cart-plus"></i> Add to Cart
                 </button>
@@ -194,7 +203,23 @@ function updateConfirmPayBtn() {
 // ===============================
 
 window.addToCart = function(id, name, price, currency, currency_id, cost, cost_currency_id, sku, is_digital) {
-    if (!cart[id]) cart[id] = { id, name, price, currency, currency_id, cost, cost_currency_id, qty: 0, sku, is_digital };
+    const itemData = window.loadedItems.find(i => i.id === id);
+    console.log("Adding to cart:", id, name, price, currency, currency_id, cost, cost_currency_id, sku, is_digital);
+    if (!cart[id]) cart[id] = {
+        id,
+        name,
+        price,
+        currency,
+        currency_id,
+        cost,
+        cost_currency_id,
+        qty: 0,
+        sku,
+        is_digital,
+        service_window_id: itemData?.service_window_id || null,
+        window_period: itemData?.window_period || null,
+        window_unit: itemData?.window_unit || null
+    };
     cart[id].qty += 1;
     renderCart();
     resetCheckoutFlow();
@@ -243,6 +268,7 @@ function syncPartnerFields() {
         document.getElementById('partner-billing-zip').value = document.getElementById('partner-zip').value;
         document.getElementById('partner-billing-email').value = document.getElementById('partner-email').value;
         document.getElementById('partner-billing-phone').value = document.getElementById('partner-phone').value;
+        document.getElementById('partner-billing-phone-country').value = document.getElementById('partner-phone-country').value; // <-- sync prefix
         document.getElementById('partner-billing_notes').value = document.getElementById('partner_notes').value;
     }
     // If pickup is selected, copy billing fields to shipping fields
@@ -254,14 +280,16 @@ function syncPartnerFields() {
         document.getElementById('partner-zip').value = document.getElementById('partner-billing-zip').value;
         document.getElementById('partner-email').value = document.getElementById('partner-billing-email').value;
         document.getElementById('partner-phone').value = document.getElementById('partner-billing-phone').value;
+        document.getElementById('partner-phone-country').value = document.getElementById('partner-billing-phone-country').value; // <-- sync prefix
         document.getElementById('partner_notes').value = document.getElementById('partner-billing_notes').value;
     }
 }
 
-
 function getPartnerData() {
     syncPartnerFields();
     const billingDifferent = document.getElementById('billing-different').checked;
+    const phone = document.getElementById('partner-phone-country').value + document.getElementById('partner-phone').value;
+    const billing_phone = document.getElementById('partner-billing-phone-country').value + document.getElementById('partner-billing-phone').value;
     const partner = {
         name: document.getElementById('partner-name').value,
         street: document.getElementById('partner-street').value,
@@ -269,7 +297,7 @@ function getPartnerData() {
         country: document.getElementById('partner-country').value,
         zip: document.getElementById('partner-zip').value,
         email: document.getElementById('partner-email').value,
-        phone: document.getElementById('partner-phone').value,
+        phone: phone,
         notes: document.getElementById('partner_notes').value,
         billing_name: billingDifferent ? document.getElementById('partner-billing-name').value : document.getElementById('partner-name').value,
         billing_street: billingDifferent ? document.getElementById('partner-billing-street').value : document.getElementById('partner-street').value,
@@ -277,7 +305,7 @@ function getPartnerData() {
         billing_country: billingDifferent ? document.getElementById('partner-billing-country').value : document.getElementById('partner-country').value,
         billing_zip: billingDifferent ? document.getElementById('partner-billing-zip').value : document.getElementById('partner-zip').value,
         billing_email: billingDifferent ? document.getElementById('partner-billing-email').value : document.getElementById('partner-email').value,
-        billing_phone: billingDifferent ? document.getElementById('partner-billing-phone').value : document.getElementById('partner-phone').value,
+        billing_phone: billingDifferent ? billing_phone : phone,
         billing_notes: document.getElementById('partner-billing_notes').value,
         partner_type: 'customer'
     };
@@ -779,6 +807,28 @@ document.getElementById('confirm-pay-btn').onclick = async function() {
         });
         const checkoutData = await checkoutResp.json();
         if (checkoutResp.ok && checkoutData.checkout_url) {
+            // After payment is successful and you have currentPartner and currentOrder
+            for (const item of Object.values(cart)) {
+                if (item.service_window_id) {
+                    const resp = await fetch('/subscriptions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            item_id: item.id,
+                            lot_id: item.lot_id || null,
+                            partner_id: currentPartner.id,
+                            service_window_id: item.service_window_id,
+                            start_date: new Date().toISOString()
+                        })
+                    });
+                    if (resp.ok) {
+                        showBuyResult(`Subscription for ${item.name} created!`);
+                    } else {
+                        const data = await resp.json();
+                        showBuyResult(`Failed to create subscription for ${item.name}: ${data.detail || 'Unknown error'}`);
+                    }
+                }
+            }
             window.location.href = checkoutData.checkout_url;
         } else {
             showPartnerError(checkoutData.detail || 'Failed to start payment');
@@ -1538,12 +1588,11 @@ function moveElementTo(elementId, targetContainerId) {
         formElement.style.display = 'block';
     }
 }
-
 function validateRequiredFields(containerId) {
     const container = document.getElementById(containerId);
     let valid = true;
     let firstInvalid = null;
-    container.querySelectorAll('input[required], textarea[required]').forEach(el => {
+    container.querySelectorAll('input[required], textarea[required], select[required]').forEach(el => {
         if (!el.value || el.value.trim() === "") {
             el.classList.add('field-error');
             valid = false;
@@ -1552,6 +1601,59 @@ function validateRequiredFields(containerId) {
             el.classList.remove('field-error');
         }
     });
+
+    // Validate email fields
+    ['partner-email', 'partner-billing-email'].forEach(id => {
+        const emailEl = document.getElementById(id);
+        if (emailEl && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailEl.value)) {
+            emailEl.classList.add('field-error');
+            valid = false;
+            firstInvalid = emailEl;
+        }
+    });
+
+    // Validate phone fields
+    ['partner-phone', 'partner-billing-phone'].forEach(id => {
+        const phoneEl = document.getElementById(id);
+        if (phoneEl && !/^\+?[0-9\s\-()]{7,}$/.test(phoneEl.value)) {
+            phoneEl.classList.add('field-error');
+            valid = false;
+            firstInvalid = phoneEl;
+        }
+    });
+
+    // Validate country fields
+    ['partner-country', 'partner-billing-country'].forEach(id => {
+        const countryEl = document.getElementById(id);
+        if (countryEl && (!countryEl.value || countryEl.value === "select country")) {
+            countryEl.classList.add('field-error');
+            valid = false;
+            firstInvalid = countryEl;
+        }
+    });
+
+    // Terms checkbox
+    const termsCheckbox = document.getElementById('accept-terms');
+    const termsContainer = document.getElementById('terms-checkbox-container');
+    let termsErrorMsg = document.getElementById('terms-error-msg');
+    if (!termsErrorMsg) {
+        termsErrorMsg = document.createElement('div');
+        termsErrorMsg.id = 'terms-error-msg';
+        termsErrorMsg.style.color = '#d32f2f';
+        termsErrorMsg.style.fontSize = '0.98rem';
+        termsErrorMsg.style.marginTop = '4px';
+        termsContainer.appendChild(termsErrorMsg);
+    }
+    if (termsCheckbox && !termsCheckbox.checked) {
+        termsCheckbox.classList.add('field-error');
+        termsContainer.classList.add('field-error'); // highlight container
+        valid = false;
+        firstInvalid = termsCheckbox;
+        showPartnerError('Please accept the Terms & Conditions and Privacy Policy to proceed.');
+    } else if (termsCheckbox) {
+        termsCheckbox.classList.remove('field-error');
+        termsContainer.classList.remove('field-error'); // remove highlight
+    }
     if (firstInvalid) firstInvalid.focus();
     return valid;
 }
@@ -1887,3 +1989,59 @@ function showPickupMapLink() {
     const mapIframe = document.getElementById('pickup-map-iframe');
     if (mapIframe) mapIframe.style.display = 'none';
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (!localStorage.getItem('privacyAccepted')) {
+        document.getElementById('privacy-banner').style.display = 'flex';
+    }
+    document.getElementById('accept-privacy-btn').onclick = function() {
+        localStorage.setItem('privacyAccepted', '1');
+        document.getElementById('privacy-banner').style.display = 'none';
+        // Optionally trigger IP/location collection here
+        collectCustomerLocation();
+    };
+});
+
+async function collectCustomerLocation() {
+    try {
+        // Use a public IP geolocation API (e.g. ipinfo.io, ipapi.co, etc.)
+        const resp = await fetch('https://ipapi.co/json/');
+        if (resp.ok) {
+            const data = await resp.json();
+            // Send to backend for logging, only after privacy acceptance
+            await fetch('/log-customer-location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        }
+    } catch (e) {
+        // Optionally handle error
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const termsContainer = document.getElementById('terms-checkbox-container');
+    const termsCheckbox = document.getElementById('accept-terms');
+    if (termsContainer && termsCheckbox) {
+        // Initial state
+        if (termsCheckbox.checked) {
+            termsContainer.classList.add('checked');
+        }
+        termsContainer.addEventListener('click', function(e) {
+            if (e.target.tagName === 'A') return;
+            if (e.target !== termsCheckbox) {
+                termsCheckbox.checked = !termsCheckbox.checked;
+                termsCheckbox.dispatchEvent(new Event('change'));
+            }
+        });
+        termsCheckbox.addEventListener('change', function() {
+            if (termsCheckbox.checked) {
+                termsContainer.classList.add('checked');
+            } else {
+                termsContainer.classList.remove('checked');
+                resetAddressConfirmation();
+            }
+        });
+    }
+});

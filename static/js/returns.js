@@ -13,12 +13,12 @@ async function startReturnOrderByCode(originModel, code = null) {
     } else if (originModel === 'quotation') {
         order = await fetch(`/quotations/${code}`).then(r => r.json());
     } else {
-        alert('Unsupported origin model');
+        showConfirmReceiptResult('Unsupported origin model');
         return;
     }
 
     if (!order || order.status !== 'confirmed') {
-        alert('Order not found or not confirmed');
+        showConfirmReceiptResult('Order not found or not confirmed');
         return;
     }
 
@@ -29,7 +29,7 @@ async function startReturnOrderByCode(originModel, code = null) {
     } else if (originModel === 'purchase_order') {
         linesUrl = `/purchase-orders/${order.id}/lines`;
     } else {
-        alert('Unsupported origin model');
+        showConfirmReceiptResult('Unsupported origin model');
         return;
     }
     const lines = await fetch(linesUrl).then(r => r.json());
@@ -92,7 +92,7 @@ async function startReturnOrderByCode(originModel, code = null) {
             }
         });
         if (!returnLines.length) {
-            alert('No items selected for return.');
+            showConfirmReceiptResult('No items selected for return.');
             return;
         }
         const ship = this.return_mode.value === 'parcel' ? 1 : 0;
@@ -109,12 +109,12 @@ async function startReturnOrderByCode(originModel, code = null) {
         });
         const data = await resp.json();
         if (resp.ok) {
-            alert('Return order created!');
+            showConfirmReceiptResult(`Return order ${data.code} created successfully!`);
             document.body.removeChild(modal);
         } else {
-            alert(`Error creating return order: ${JSON.stringify(data.detail)}` || 'Unknown error');
+            showConfirmReceiptResult(`Error creating return order: ${JSON.stringify(data.detail)}` || 'Unknown error');
         }
-        console.log('Return order response:', data);
+        showConfirmReceiptResult(`Return order ${data.code} created successfully!`);
     };
 }
 
@@ -253,7 +253,7 @@ document.addEventListener("DOMContentLoaded", function() {
             // Fetch the order to get its numeric ID
             const resp = await fetch(`/sale-orders/by-code/${orderNumber}`);
             if (!resp.ok) {
-                document.getElementById("confirm-receipt-result").textContent = "Order not found";
+                showConfirmReceiptResult("Order not found");
                 return;
             }
             const order = await resp.json();
@@ -265,11 +265,11 @@ document.addEventListener("DOMContentLoaded", function() {
                     method: "POST"
                 });
                 const data = await confirmResp.json();
-                document.getElementById("confirm-receipt-result").textContent = data.message || "Done!";
+                showConfirmReceiptResult(data.message || "Done!");
                 confirmBtn.classList.remove("pending");
                 confirmBtn.disabled = true;
             } catch (e) {
-                document.getElementById("confirm-receipt-result").textContent = "Error confirming receipt";
+                showConfirmReceiptResult("Error confirming receipt");
             }
         };
     }
@@ -294,13 +294,39 @@ document.getElementById('create-shippo-address-btn').onclick = async function() 
                 downloadBtn.innerHTML = "";
                 downloadBtn.removeAttribute("href");
                 downloadBtn.style.display = "none";
-                alert('Error creating Shippo address: ' + (JSON.stringify(data)));
+                showConfirmReceiptResult('Error creating Shippo address: ' + (JSON.stringify(data)));
             }
         }
     } catch (e) {
-        alert('Error creating Shippo address');
+        showConfirmReceiptResult('Error creating Shippo address');
     }
 };
+
+function showConfirmReceiptResult(message) {
+    const popup = document.getElementById("confirm-receipt-popup");
+    const msg = document.getElementById("confirm-receipt-message");
+    msg.textContent = message;
+    popup.style.display = "block";
+    if (window.confirmReceiptTimeout) clearTimeout(window.confirmReceiptTimeout);
+    window.confirmReceiptTimeout = setTimeout(hideConfirmReceiptResult, 5000);
+}
+
+function hideConfirmReceiptResult() {
+    const popup = document.getElementById("confirm-receipt-popup");
+    popup.style.display = "none";
+    const msg = document.getElementById("confirm-receipt-message");
+    msg.textContent = "";
+    if (window.confirmReceiptTimeout) clearTimeout(window.confirmReceiptTimeout);
+}
+
+// Attach close button handler
+document.addEventListener("DOMContentLoaded", function() {
+    const closeBtn = document.getElementById("confirm-receipt-close");
+    if (closeBtn) {
+        closeBtn.onclick = hideConfirmReceiptResult;
+    }
+});
+
 
 // Only call these if the elements exist (for admin/customer panel)
 if (document.getElementById('return-orders-list')) loadReturnOrders();

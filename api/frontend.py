@@ -34,8 +34,10 @@ async def shop_success(order_number: str, session_id: str = None):
             <div style="margin-bottom:18px;">
                 <p>Your order <b>{order_number}</b> has been <span style="color:#2e7d32;font-weight:500;">paid successfully</span>.</p>
             </div>
-            <a href="/shop/{order_number}/" class="shop-back-link"><i class="fas fa-box"></i> See Order Details</a>
-            <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            <div style="display: flex; justify-content: space-between; gap: 18px; margin-top: 12px;">
+                <a href="/shop/{order_number}/" class="shop-back-link"><i class="fas fa-box"></i> See Order Details</a>
+                <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            </div>
         </div>
     </body>
     </html>
@@ -60,8 +62,10 @@ async def shop_cancel(order_number: str):
             <div style="margin-bottom:18px;">
                 <p>Your payment for order <b>{order_number}</b> was <span style="color:#d32f2f;font-weight:500;">cancelled</span>.</p>
             </div>
-            <a href="/shop/{order_number}/" class="shop-back-link"><i class="fas fa-box"></i> See Order Details</a>
-            <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            <div style="display: flex; justify-content: space-between; gap: 18px; margin-top: 12px;">
+                <a href="/shop/{order_number}/" class="shop-back-link"><i class="fas fa-box"></i> See Order Details</a>
+                <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            </div>
         </div>
     </body>
     </html>
@@ -90,11 +94,24 @@ async def shop_order_page(order_number: str):
                 <button id="create-return-btn"><i class="fas fa-undo"></i> Create Return Order</button>
                 <button id="confirm-receipt-btn" class="pending"><i class="fas fa-check-circle"></i> Confirm Receipt</button>
             </div>
-            <div id="confirm-receipt-result"></div>
+            <div id="confirm-receipt-popup" style="display:none;">
+            <span id="confirm-receipt-message"></span>
+            <button id="confirm-receipt-close" style="margin-left:12px;">&times;</button>
+            </div>
             <div id="return-result"></div>
-            <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            <div style="display: flex; justify-content: space-between; gap: 18px; margin-top: 12px;">
+                <a href="/shop/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Back to Shop</a>
+            </div>
         </div>
     </body>
     </html>
     """
     return HTMLResponse(content=html)
+
+@router.get("/privacy-policy", response_class=HTMLResponse)
+async def privacy_policy():
+    return FileResponse("static/privacy-policy.html")
+
+@router.get("/terms", response_class=HTMLResponse)
+async def terms_page():
+    return FileResponse("static/terms.html")
