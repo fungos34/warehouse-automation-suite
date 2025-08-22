@@ -42,17 +42,23 @@ class PurchaseOrderLineIn(BaseModel):
 
 class PartnerCreate(BaseModel):
     name: str
-    email: str
-    phone: str
     street: str
     city: str
+    country_id: int
     zip: str
-    country: str
-    billing_street: str
-    billing_city: str
-    billing_zip: str
-    billing_country: str
-    partner_type: str
+    email: str
+    phone: str
+    notes: str = ""
+    billing_name: str = ""
+    billing_street: str = ""
+    billing_city: str = ""
+    billing_country_id: int = None
+    billing_zip: str = ""
+    billing_email: str = ""
+    billing_phone: str = ""
+    billing_notes: str = ""
+    partner_type: str = "customer"
+    language_id: int = None
 
 class SaleOrderCreate(BaseModel):
     code: str = ""

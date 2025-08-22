@@ -6,21 +6,20 @@ from auth import get_current_username
 router = APIRouter()
 
 
-@router.post("/partners", tags=["Partners"])
-def create_partner(partner: PartnerCreate):  # username: str = Depends(get_current_username)
+@router.post("/partners", tags=["Partner"])
+def create_partner(data: PartnerCreate):
     with get_conn() as conn:
         cur = conn.execute("""
-            INSERT INTO partner 
-            (name, street, city, country, zip, billing_street, billing_city, billing_country, billing_zip, email, phone, partner_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO partner (
+                name, street, city, country_id, zip, email, phone, notes,
+                billing_name, billing_street, billing_city, billing_country_id, billing_zip, billing_email, billing_phone, billing_notes, partner_type, language_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            partner.name, partner.street, partner.city, partner.country, partner.zip,
-            partner.billing_street, partner.billing_city, partner.billing_country, partner.billing_zip,
-            partner.email, partner.phone, partner.partner_type
+            data.name, data.street, data.city, data.country_id, data.zip, data.email, data.phone, data.notes,
+            data.billing_name, data.billing_street, data.billing_city, data.billing_country_id, data.billing_zip, data.billing_email, data.billing_phone, data.billing_notes, data.partner_type, data.language_id
         ))
-        partner_id = cur.lastrowid
         conn.commit()
-        return {"id": partner_id}
+        return {"id": cur.lastrowid}
     
 @router.get("/partners", tags=["Partners"])
 def get_partners(vendor: int = None, username: str = Depends(get_current_username)):

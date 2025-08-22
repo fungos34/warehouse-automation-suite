@@ -352,18 +352,29 @@ def get_item_vendor(item_id: int):
         if not row or row["vendor_id"] is None:
             raise HTTPException(status_code=404, detail="Vendor not found for this item")
         return {"vendor_id": row["vendor_id"]}
-
+    
+    
 @router.get("/items", tags=["Catalog"])
-def get_items():
+def get_items(country_code: str = None, currency_code: str = None):
     with get_conn() as conn:
-        price_list = conn.execute("""
-            SELECT id, currency_id FROM price_list
-            WHERE date('now') BETWEEN IFNULL(valid_from, date('now')) AND IFNULL(valid_to, date('now'))
-            ORDER BY valid_from DESC LIMIT 1
-        """).fetchone()
-        price_list_id = price_list["id"] if price_list else None
+        # Find the latest valid price list for the selected country/currency
+        price_list_row = conn.execute("""
+            SELECT pl.id, pl.currency_id, c.code as currency_code, co.id as country_id
+            FROM price_list pl
+            JOIN currency c ON pl.currency_id = c.id
+            JOIN country co ON pl.country_id = co.id
+            WHERE (? IS NULL OR co.code = ?)
+              AND (? IS NULL OR c.code = ?)
+              AND (pl.valid_from IS NULL OR pl.valid_from <= DATE('now'))
+              AND (pl.valid_to IS NULL OR pl.valid_to >= DATE('now'))
+            ORDER BY pl.valid_from DESC
+            LIMIT 1
+        """, (country_code, country_code, currency_code, currency_code)).fetchone()
+        price_list_id = price_list_row["id"] if price_list_row else None
+        country_id = price_list_row["country_id"] if price_list_row else None
 
-        result = conn.execute(f"""
+        # Only fetch items from the selected price list
+        result = conn.execute("""
             SELECT 
                 i.id, 
                 i.name, 
@@ -382,15 +393,22 @@ def get_items():
                 i.cost_currency_id,
                 pli.price AS sales_price,
                 sales_cur.code AS sales_currency_code,
-                i.image_url
-            FROM item i
+                sales_cur.symbol AS sales_currency_symbol,
+                i.image_url,
+                t.percent AS tax_percent,
+                t.label AS tax_label
+            FROM price_list_item pli
+            JOIN item i ON pli.item_id = i.id
             LEFT JOIN service_window sw ON i.service_window_id = sw.id
             LEFT JOIN currency cost_cur ON i.cost_currency_id = cost_cur.id
-            LEFT JOIN price_list_item pli ON pli.item_id = i.id {"AND pli.price_list_id = ?" if price_list_id else ""}
-            LEFT JOIN price_list pl ON pli.price_list_id = pl.id
-            LEFT JOIN currency sales_cur ON pl.currency_id = sales_cur.id
+            JOIN price_list pl ON pli.price_list_id = pl.id
+            JOIN currency sales_cur ON pl.currency_id = sales_cur.id
+            LEFT JOIN item_hs_country ihc ON ihc.item_id = i.id AND ihc.country_id = ?
+            LEFT JOIN hs_country_tax hct ON hct.hs_code_id = ihc.hs_code_id AND hct.country_id = ?
+            LEFT JOIN tax t ON t.id = hct.tax_id
+            WHERE pli.price_list_id = ?
             ORDER BY i.id
-        """, (price_list_id,) if price_list_id else ()).fetchall()
+        """, (country_id, country_id, price_list_id)).fetchall()
         return [dict(row) for row in result]
     
 
@@ -448,6 +466,29 @@ def get_item(item_id: int):
             raise HTTPException(status_code=404, detail="Item not found")
         return dict(result)
     
+
+@router.get("/country-info", response_class=JSONResponse)
+def get_country_info(country: str):
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT id, code, name, currency_id, language_id
+            FROM country
+            WHERE code = ?
+            LIMIT 1
+        """, (country,)).fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"detail": "Country not found"})
+        currency = conn.execute("SELECT code, symbol FROM currency WHERE id = ?", (row["currency_id"],)).fetchone()
+        language = conn.execute("SELECT code FROM language WHERE id = ?", (row["language_id"],)).fetchone()
+        return {
+            "id": row["id"],  # <-- Add this line
+            "code": row["code"],
+            "name": row["name"],
+            "currency_code": currency["code"] if currency else "EUR",
+            "currency_symbol": currency["symbol"] if currency else "€",
+            "language": language["code"] if language else "en"
+        }
+
 
 @router.get("/service-hours/{sku}", tags=["Service"])
 def get_service_hours_by_sku(sku: str):
@@ -816,9 +857,11 @@ async def get_company_name():
 async def get_company_address():
     with get_conn() as conn:
         row = conn.execute("""
-            SELECT c.name AS company_name, c.logo_url, c.website, p.street, p.zip, p.city, p.country, p.phone, p.email
+            SELECT c.name AS company_name, c.logo_url, c.website,
+                p.street, p.zip, p.city, co.name AS country, p.phone, p.email
             FROM company c
             JOIN partner p ON c.partner_id = p.id
+            LEFT JOIN country co ON p.country_id = co.id
             LIMIT 1
         """).fetchone()
         return {

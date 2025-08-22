@@ -4079,10 +4079,10 @@ INSERT INTO discount (name, percent, amount, description) VALUES
 
 -- -- Seed price list
 INSERT OR IGNORE INTO price_list (name, currency_id, valid_from, valid_to, country_id) VALUES
-('European Union EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='DE')),
-('European Union EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2026-01-01', '2026-12-31', (SELECT id FROM country WHERE code='AT')),
+('Germany EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='DE')),
+('Austria EUR 2026', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='AT')),
 ('Switzerland CHF 2025', (SELECT id FROM currency WHERE code='CHF'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='CH')),
-('World BAM 2025', (SELECT id FROM currency WHERE code='BAM'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='BA'));
+('Bosnia BAM 2025', (SELECT id FROM currency WHERE code='BAM'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='BA'));
 
 -- -- Price list items
 -- Example items for Germany
@@ -4094,10 +4094,10 @@ INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
 
 -- Example items for Austria
 INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), 13.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), 25.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 75.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 52.99);
+((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SKU001'), 13.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SKU002'), 25.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 75.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SW-PRO'), 52.99);
 
 -- Example items for Switzerland
 INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES

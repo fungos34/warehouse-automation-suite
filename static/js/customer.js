@@ -27,9 +27,26 @@ let reservedPickupBooking = null;
 const SHIPPING_RATE_PAGE_SIZE = 3;
 let shippingRatePage = 0;
 
+window.selectedCountry = 'DE'; // default, or detect from user/IP
+window.selectedLanguage = 'de'; // default, or detect from browser
+window.selectedCurrency = 'EUR'; // default, or detect from user/IP
+
 // ===============================
 //  Initialization & DOM Setup
 // ===============================
+
+function setCountryAndLanguage(country, language) {
+    window.selectedCountry = country;
+    window.selectedLanguage = language;
+    // Call functions to update pricing, currency, language, taxes, carriers, etc.
+    updateShopForCountry();
+}
+
+function updateShopForCountry() {
+    loadItems();
+    renderCart();
+    // Optionally update other UI elements for currency, language, etc.
+}
 
 function scrollToSection(sectionId) {
     const el = document.getElementById(sectionId);
@@ -41,7 +58,7 @@ function scrollToSection(sectionId) {
 async function loadItems() {
     console.log("loading items ...");
     try {
-        const resp = await fetch('/items');
+        const resp = await fetch(`/items?country_code=${window.selectedCountry}&currency_code=${window.selectedCurrency}`);
         if (!resp.ok) throw new Error('Could not load items');
         const items = await resp.json();
         if (!Array.isArray(items)) throw new Error('Invalid items data');
@@ -59,7 +76,6 @@ async function loadItems() {
     }
 }
 
-
 function renderCart() {
     const cartList = document.getElementById('cart-list');
     if (Object.keys(cart).length === 0) {
@@ -68,27 +84,32 @@ function renderCart() {
         return;
     }
     let total = 0;
+    let totalTax = 0;
     cartList.innerHTML = `
         <div class="cart-grid">
             ${Object.values(cart).map(item => {
-                const subtotal = item.price * item.qty;
+                const taxPercent = item.tax_percent || 0;
+                const grossPrice = item.price * (1 + taxPercent / 100);
+                const subtotal = grossPrice * item.qty;
                 total += subtotal;
+                totalTax += (grossPrice - item.price) * item.qty;
                 let periodStr = '';
                 if (item.service_window_id && item.window_period && item.window_unit) {
                     periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
                 }
+                let currencySymbol = item.sales_currency_symbol || item.currency || '€';
                 return `
                     <div class="cart-item-card">
                         <div class="cart-item-title">${item.name}</div>
                         <div class="cart-item-meta">
                             <span class="cart-item-sku">SKU: ${item.sku || ''}</span>
-                            <span class="cart-item-price">${item.price} ${item.currency}${periodStr}</span>
+                            <span class="cart-item-price">${currencySymbol} ${grossPrice.toFixed(2)}${periodStr} <span class="cart-item-tax">incl. ${item.tax_label || 'tax'}</span></span>
                         </div>
                         <div class="cart-item-qty">
                             <label for="cart-qty-${item.id}" class="cart-qty-label">Quantity:</label>
                             <input id="cart-qty-${item.id}" type="number" min="1" value="${item.qty}" class="cart-qty-input" onchange="updateCartQty(${item.id}, this.value)">
                         </div>
-                        <div class="cart-item-subtotal">Subtotal: ${subtotal.toFixed(2)} ${item.currency}</div>
+                        <div class="cart-item-subtotal">Subtotal: ${currencySymbol} ${subtotal.toFixed(2)}</div>
                         <div class="cart-actions">
                             <button class="cart-remove-btn" onclick="removeFromCart(${item.id})"><i class="fas fa-trash"></i> Remove</button>
                         </div>
@@ -96,10 +117,10 @@ function renderCart() {
                 `;
             }).join('')}
         </div>
-        <div class="cart-total">Total: <b>${total.toFixed(2)} ${Object.values(cart)[0].currency}</b></div>
+        <div class="cart-total">Total: <b>${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${total.toFixed(2)}</b> <span class="cart-total-tax">incl. total tax: ${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${totalTax.toFixed(2)}</span></div>
+
     `;
 }
-
 
 // Example for item rendering in returns.js or a new shop.js
 function renderShopItems(items) {
@@ -110,6 +131,13 @@ function renderShopItems(items) {
         if (item.service_window_id && item.window_period && item.window_unit) {
             periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
         }
+        // Calculate gross price (including tax)
+        let grossPrice = item.sales_price;
+        if (item.tax_percent) {
+            grossPrice = Number(item.sales_price) * (1 + Number(item.tax_percent) / 100);
+        }
+        // Use currency symbol if available
+        let currencySymbol = item.sales_currency_symbol || item.sales_currency_code || '€';
         grid.innerHTML += `
             <div class="shop-item-card">
                 <div class="shop-item-image-wrap">
@@ -121,14 +149,18 @@ function renderShopItems(items) {
                     <span class="shop-item-sku">SKU: ${item.sku}</span>
                     ${item.stock !== undefined ? `<span class="shop-item-stock ${item.stock > 0 ? 'in-stock' : 'out-stock'}">${item.stock > 0 ? 'In stock' : 'Out of stock'}</span>` : ''}
                 </div>
-                <div class="shop-item-price">${item.sales_price ? '€' + Number(item.sales_price).toFixed(2) : ''}${periodStr}</div>
-                <button class="shop-item-add-btn" onclick="addToCart(${item.id}, '${item.name.replace(/'/g, "\\'")}', ${item.sales_price || 0}, '${item.sales_currency_code || ''}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1}, '${item.sku || ''}', ${item.is_digital ? 'true' : 'false'})">
+                <div class="shop-item-price">
+                    ${item.sales_price ? `${currencySymbol} ${grossPrice.toFixed(2)} <span class="shop-item-tax">incl. ${item.tax_label || 'tax'}</span>` : ''}
+                    ${periodStr}
+                </div>
+                <button class="shop-item-add-btn" onclick="addToCart(${item.id}, '${item.name.replace(/'/g, "\\'")}', ${grossPrice || 0}, '${item.sales_currency_code || ''}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1}, '${item.sku || ''}', ${item.is_digital ? 'true' : 'false'})">
                     <i class="fas fa-cart-plus"></i> Add to Cart
                 </button>
             </div>
         `;
     });
 }
+
 
 function updatePickupMapLink(name, street, zip, city) {
     const mapLink = document.getElementById('pickup-map-link');
@@ -285,16 +317,23 @@ function syncPartnerFields() {
     }
 }
 
-function getPartnerData() {
+async function getPartnerData() {
     syncPartnerFields();
     const billingDifferent = document.getElementById('billing-different').checked;
     const phone = document.getElementById('partner-phone-country').value + document.getElementById('partner-phone').value;
     const billing_phone = document.getElementById('partner-billing-phone-country').value + document.getElementById('partner-billing-phone').value;
+
+    // Fetch country IDs asynchronously
+    const partnerCountryCode = document.getElementById('partner-country').value;
+    const billingCountryCode = document.getElementById('partner-billing-country').value;
+    const partnerCountryId = await getCountryId(partnerCountryCode);
+    const billingCountryId = await getCountryId(billingCountryCode);
+
     const partner = {
         name: document.getElementById('partner-name').value,
         street: document.getElementById('partner-street').value,
         city: document.getElementById('partner-city').value,
-        country: document.getElementById('partner-country').value,
+        country_id: partnerCountryId,
         zip: document.getElementById('partner-zip').value,
         email: document.getElementById('partner-email').value,
         phone: phone,
@@ -302,7 +341,7 @@ function getPartnerData() {
         billing_name: billingDifferent ? document.getElementById('partner-billing-name').value : document.getElementById('partner-name').value,
         billing_street: billingDifferent ? document.getElementById('partner-billing-street').value : document.getElementById('partner-street').value,
         billing_city: billingDifferent ? document.getElementById('partner-billing-city').value : document.getElementById('partner-city').value,
-        billing_country: billingDifferent ? document.getElementById('partner-billing-country').value : document.getElementById('partner-country').value,
+        billing_country_id: billingCountryId,
         billing_zip: billingDifferent ? document.getElementById('partner-billing-zip').value : document.getElementById('partner-zip').value,
         billing_email: billingDifferent ? document.getElementById('partner-billing-email').value : document.getElementById('partner-email').value,
         billing_phone: billingDifferent ? billing_phone : phone,
@@ -311,7 +350,6 @@ function getPartnerData() {
     };
     return partner;
 }
-
 function getCompanyData() {
     const company = {
         name: document.getElementById('company-name').value,
@@ -414,23 +452,7 @@ document.getElementById('confirm-data-btn').onclick = async function(e) {
     }
 
     // Gather address data
-    const partner = {
-        name: document.getElementById('partner-name').value,
-        email: document.getElementById('partner-email').value,
-        phone: document.getElementById('partner-phone').value,
-        street: document.getElementById('partner-street').value,
-        city: document.getElementById('partner-city').value,
-        zip: document.getElementById('partner-zip').value,
-        country: document.getElementById('partner-country').value,
-        billing_name: document.getElementById('partner-billing-name').value,
-        billing_email: document.getElementById('partner-billing-email').value,
-        billing_phone: document.getElementById('partner-billing-phone').value,
-        billing_street: document.getElementById('partner-billing-street').value,
-        billing_city: document.getElementById('partner-billing-city').value,
-        billing_zip: document.getElementById('partner-billing-zip').value,
-        billing_country: document.getElementById('partner-billing-country').value,
-        partner_type: 'customer'
-    };
+    const partner = await getPartnerData();
 
     // 1. Create partner/customer
     let partnerId = null;
@@ -604,7 +626,7 @@ document.getElementById('confirm-shipping-btn').onclick = async function(e) {
     pendingCart = { ...cart };
 
     // Gather partner data again (in case form changed)
-    const partner = getPartnerData();
+    const partner = await getPartnerData();
     try {
         // 1. Create partner
         const resp = await fetch('/partners', {
@@ -872,7 +894,7 @@ document.getElementById('partner-form').onsubmit = async function(e) {
     }
 
     // 2. Gather partner data (shipping + billing)
-    const partner = getPartnerData();
+    const partner = await getPartnerData();
     if (companyId) partner.company_id = companyId;
 
     // 3. Submit partner data
@@ -940,7 +962,7 @@ async function fetchShippingRates() {
         if (currentPartner && currentPartner.id) {
             customerId = currentPartner.id;
         } else {
-            const partner = getPartnerData();
+            const partner = await getPartnerData();
             try {
                 const resp = await fetch('/partners', {
                     method: 'POST',
@@ -993,7 +1015,7 @@ async function fetchShippingRates() {
             city: document.getElementById('partner-city').value,
             state: "", // Add a field for state if needed
             zip: document.getElementById('partner-zip').value,
-            country: document.getElementById('partner-country').value,
+            country_id: document.getElementById('partner-country').value,
             email: document.getElementById('partner-email').value,
             phone: document.getElementById('partner-phone').value
         };
@@ -2045,3 +2067,48 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+async function onCountryChange(countryCode) {
+    // Fetch country info from backend
+    const resp = await fetch(`/country-info?country=${countryCode}`);
+    if (resp.ok) {
+        const info = await resp.json();
+        window.selectedCountry = info.code;
+        window.selectedCurrency = info.currency_code;
+        window.selectedLanguage = info.language || 'en';
+        // Reload items with new currency
+        await loadItems();
+        renderCart();
+    }
+}
+
+
+// Attach to country dropdowns
+document.addEventListener('DOMContentLoaded', function() {
+    // On initial load, use default globals
+    loadItems();
+    renderCart();
+
+    const countrySelect = document.getElementById('partner-country');
+    if (countrySelect) {
+        countrySelect.onchange = function() {
+            onCountryChange(this.value);
+        };
+    }
+    // Optionally, also for billing country
+    const billingCountrySelect = document.getElementById('partner-billing-country');
+    if (billingCountrySelect) {
+        billingCountrySelect.onchange = function() {
+            onCountryChange(this.value);
+        };
+    }
+});
+
+async function getCountryId(code) {
+    const resp = await fetch(`/country-info?country=${code}`);
+    if (resp.ok) {
+        const info = await resp.json();
+        return info.id; // Add 'id' to your /country-info endpoint response
+    }
+    return null;
+}

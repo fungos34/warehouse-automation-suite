@@ -440,7 +440,13 @@ def sale_order_pdf(order_id: int):
         order = conn.execute("SELECT * FROM sale_order WHERE id = ?", (order_id,)).fetchone()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
-        buyer = conn.execute("SELECT * FROM partner WHERE id = ?", (order["partner_id"],)).fetchone()
+        buyer = conn.execute("""
+            SELECT p.*, co.name AS country, co2.name AS billing_country
+            FROM partner p
+            LEFT JOIN country co ON p.country_id = co.id
+            LEFT JOIN country co2 ON p.billing_country_id = co2.id
+            WHERE p.id = ?
+        """, (order["partner_id"],)).fetchone()
         lines = conn.execute("""
             SELECT ol.quantity, ol.returned_quantity, ol.price, i.name as item_name, i.sku as item_sku, ol.lot_id, l.lot_number as lot_code
             FROM order_line ol
@@ -466,9 +472,10 @@ def sale_order_pdf(order_id: int):
             WHERE ro.origin_model = 'sale_order' AND ro.origin_id = ? AND ro.status = 'done'
         """, (order_id,)).fetchall()
         company = conn.execute("""
-            SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
+            SELECT c.name, p.street, p.city, co.name AS country, p.zip, p.phone, p.email
             FROM company c
             JOIN partner p ON c.partner_id = p.id
+            LEFT JOIN country co ON p.country_id = co.id
             LIMIT 1
         """).fetchone()
 
@@ -630,9 +637,10 @@ def sale_order_delivery_pdf(order_id: int):
             WHERE ol.order_id = ?
         """, (order_id,)).fetchall()
         company = conn.execute("""
-            SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
+            SELECT c.name, p.street, p.city, co.name AS country, p.zip, p.phone, p.email
             FROM company c
             JOIN partner p ON c.partner_id = p.id
+            LEFT JOIN country co ON p.country_id = co.id
             LIMIT 1
         """).fetchone()
 
@@ -832,7 +840,13 @@ def print_quotation_pdf(quotation_id: int):
         quotation = conn.execute("SELECT * FROM quotation WHERE id = ?", (quotation_id,)).fetchone()
         if not quotation:
             raise HTTPException(status_code=404, detail="Quotation not found")
-        buyer = conn.execute("SELECT * FROM partner WHERE id = ?", (quotation["partner_id"],)).fetchone()
+        buyer = conn.execute("""
+            SELECT p.*, co.name AS country, co2.name AS billing_country
+            FROM partner p
+            LEFT JOIN country co ON p.country_id = co.id
+            LEFT JOIN country co2 ON p.billing_country_id = co2.id
+            WHERE p.id = ?
+        """, (quotation["partner_id"],)).fetchone()
         lines = conn.execute("""
             SELECT ql.quantity, ql.price, i.name as item_name, i.sku as item_sku, ql.lot_id, l.lot_number as lot_code
             FROM quotation_line ql
@@ -841,9 +855,10 @@ def print_quotation_pdf(quotation_id: int):
             WHERE ql.quotation_id = ?
         """, (quotation_id,)).fetchall()
         company = conn.execute("""
-            SELECT c.name, p.street, p.city, p.country, p.zip, p.phone, p.email
+            SELECT c.name, p.street, p.city, co.name AS country, p.zip, p.phone, p.email
             FROM company c
             JOIN partner p ON c.partner_id = p.id
+            LEFT JOIN country co ON p.country_id = co.id
             LIMIT 1
         """).fetchone()
 
