@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS hs_country_tax (
     hs_code_id INTEGER NOT NULL,
     country_id INTEGER NOT NULL, -- Lieferland
     tax_id INTEGER NOT NULL,     -- jede Art von Steuer
+    UNIQUE(hs_code_id, country_id, tax_id),
     FOREIGN KEY(hs_code_id) REFERENCES hs_code(id),
     FOREIGN KEY(country_id) REFERENCES country(id),
     FOREIGN KEY(tax_id) REFERENCES tax(id)
@@ -64,7 +65,31 @@ CREATE TABLE IF NOT EXISTS tax (
     name TEXT NOT NULL,
     percent REAL NOT NULL,         -- e.g. 19.0 for 19%
     description TEXT,
-    label TEXT
+    label TEXT,
+    fixed_amount REAL,      -- fixed amount per unit (optional)
+    fixed_currency_id INTEGER,-- currency for the fixed amount
+    fixed_unit_id INTEGER,     -- unit for the fixed amount
+    FOREIGN KEY(fixed_currency_id) REFERENCES currency(id),
+    FOREIGN KEY(fixed_unit_id) REFERENCES unit(id)
+);
+
+-- unit table
+CREATE TABLE IF NOT EXISTS unit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    category TEXT NOT NULL CHECK(category IN ('units', 'length', 'area', 'volume', 'weight')),
+    description TEXT
+);
+
+-- Unit Conversion Table
+CREATE TABLE IF NOT EXISTS unit_conversion (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_unit_id INTEGER NOT NULL,
+    to_unit_id INTEGER NOT NULL,
+    conversion_rate REAL NOT NULL,
+    FOREIGN KEY(from_unit_id) REFERENCES unit(id),
+    FOREIGN KEY(to_unit_id) REFERENCES unit(id)
 );
 
 -- Discount Table
@@ -93,9 +118,11 @@ CREATE TABLE IF NOT EXISTS price_list_item (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     price_list_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
+    unit_id INTEGER NOT NULL,
     price REAL NOT NULL, -- net price
     FOREIGN KEY(price_list_id) REFERENCES price_list(id),
-    FOREIGN KEY(item_id) REFERENCES item(id)
+    FOREIGN KEY(item_id) REFERENCES item(id),
+    FOREIGN KEY(unit_id) REFERENCES unit(id)
 );
 
 -- Create item
@@ -3680,6 +3707,40 @@ WHERE code GLOB 'LOC_J?_*' OR code GLOB 'LOC_K?_*' OR code GLOB 'LOC_M?_*' OR co
 INSERT INTO location_zone (location_id, zone_id)
 SELECT id, (SELECT id FROM zone WHERE code = 'ZON_PROD') FROM location WHERE code IN ('LOC_PROD_1', 'LOC_PROD_2', 'LOC_PROD_3', 'LOC_PROD_4');
 
+-- Weight units
+INSERT OR IGNORE INTO unit (name, symbol, category, description) VALUES
+('Gram', 'g', 'weight', 'Gram'),
+('Kilogram', 'kg', 'weight', 'Kilogram'),
+('Pound', 'lb', 'weight', 'Pound');
+
+-- Length units
+INSERT OR IGNORE INTO unit (name, symbol, category, description) VALUES
+('Meter', 'm', 'length', 'Meter'),
+('Millimeter', 'mm', 'length', 'Millimeter'),
+('Foot', 'ft', 'length', 'Foot');
+
+INSERT OR IGNORE INTO unit (name, symbol, category, description) VALUES
+('Piece', 'pc.', 'units', 'Single item');
+
+
+-- Weight conversions
+INSERT OR IGNORE INTO unit_conversion (from_unit_id, to_unit_id, conversion_rate) VALUES
+((SELECT id FROM unit WHERE symbol='g'), (SELECT id FROM unit WHERE symbol='kg'), 0.001),
+((SELECT id FROM unit WHERE symbol='kg'), (SELECT id FROM unit WHERE symbol='g'), 1000),
+((SELECT id FROM unit WHERE symbol='kg'), (SELECT id FROM unit WHERE symbol='lb'), 2.20462),
+((SELECT id FROM unit WHERE symbol='lb'), (SELECT id FROM unit WHERE symbol='kg'), 0.453592),
+((SELECT id FROM unit WHERE symbol='g'), (SELECT id FROM unit WHERE symbol='lb'), 0.00220462),
+((SELECT id FROM unit WHERE symbol='lb'), (SELECT id FROM unit WHERE symbol='g'), 453.592);
+
+-- Length conversions
+INSERT OR IGNORE INTO unit_conversion (from_unit_id, to_unit_id, conversion_rate) VALUES
+((SELECT id FROM unit WHERE symbol='m'), (SELECT id FROM unit WHERE symbol='mm'), 1000),
+((SELECT id FROM unit WHERE symbol='mm'), (SELECT id FROM unit WHERE symbol='m'), 0.001),
+((SELECT id FROM unit WHERE symbol='m'), (SELECT id FROM unit WHERE symbol='ft'), 3.28084),
+((SELECT id FROM unit WHERE symbol='ft'), (SELECT id FROM unit WHERE symbol='m'), 0.3048),
+((SELECT id FROM unit WHERE symbol='mm'), (SELECT id FROM unit WHERE symbol='ft'), 0.00328084),
+((SELECT id FROM unit WHERE symbol='ft'), (SELECT id FROM unit WHERE symbol='mm'), 304.8);
+
 -- Seed currencies (if not already present)
 INSERT OR IGNORE INTO currency (code, symbol, name, rel_to_usd) VALUES
 ('USD', '$', 'US Dollar', 1.16),
@@ -3694,12 +3755,15 @@ INSERT OR IGNORE INTO language (code, name, native_name) VALUES
 ('fr', 'French', 'Français'),
 ('bs', 'Bosnian', 'Bosanski');
 
--- Seed taxes (if not already present)
-INSERT OR IGNORE INTO tax (name, percent, description) VALUES
-('DE Standard VAT', 19.0, 'Standard VAT for Germany'),
-('AT Standard VAT', 20.0, 'Standard VAT for Austria'),
-('CH Standard VAT', 7.7, 'Standard VAT for Switzerland'),
-('BA Standard VAT', 17.0, 'Standard VAT for Bosnia and Herzegovina');
+-- Standard VAT for each country
+INSERT OR IGNORE INTO tax (name, percent, description, label) VALUES
+('DE Standard VAT', 19.0, 'Standard VAT for Germany', 'USt.'),
+('AT Standard VAT', 20.0, 'Standard VAT for Austria', 'MwSt.'),
+('CH Standard VAT', 7.7, 'Standard VAT for Switzerland', 'MWST/TVA/IVA'),
+('BA Standard VAT', 17.0, 'Standard VAT for Bosnia and Herzegovina', 'PDV'),
+('DE Reduced VAT', 7.0, 'Reduced VAT for Germany (books, food)', 'USt.'),
+('AT Reduced VAT', 10.0, 'Reduced VAT for Austria (food, books)', 'MwSt.'),
+('CH Reduced VAT', 2.5, 'Reduced VAT for Switzerland (food, books)', 'MWST/TVA/IVA');
 
 -- Seed countries
 INSERT OR IGNORE INTO country (
@@ -3762,9 +3826,9 @@ INSERT INTO partner (
     'billing.customer@example.com', '555555555', 'Billing contact for Customer B',
     'customer', (SELECT id FROM language WHERE code='de')
 ),
-('Owner A', 'Frikusweg 10', 'Kalsdorf bei Graz', 1, '8401',
+('Owner A', 'Frikusweg 10', 'Kalsdorf bei Graz', 2, '8401',
     'owner@example.com', '111222333', '',
-    'Owner A Billing', 'Nußbaumerstraße 14', 'Graz', 1, '8042',
+    'Owner A Billing', 'Nußbaumerstraße 14', 'Graz', 2, '8042',
     'billing.owner@example.com', '111222333', 'Billing contact for Owner A',
     'employee', (SELECT id FROM language WHERE code='de')
 ),
@@ -3895,7 +3959,7 @@ INSERT INTO item (
 INSERT INTO item (
     name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url
 ) VALUES (
-    'SuperApp Pro License',
+    'SuperApp Pro License Abo',
     'SW-PRO',
     'SW-PRO-BC',
     'digital',
@@ -4014,7 +4078,25 @@ INSERT INTO service_booking (item_id, service_window_id, start_datetime, status,
 ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+3 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+3 days') || ' at 11:00'),
 ((SELECT id FROM item WHERE sku = 'CC-SLOT-001'), (SELECT service_window_id FROM item WHERE sku = 'CC-SLOT-001'), datetime(date('now', '+4 days') || ' 11:00:00'), 'pending', 'Click & Collect slot on ' || date('now', '+4 days') || ' at 11:00');
 
+INSERT INTO item (
+    name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url, weight
+) VALUES (
+    'Apples', 'APPLE-KG', 'APPLE-KG-BC', 'product', 'small',
+    'Fresh apples sold by weight (kg).',
+    1, 0, 0, 0, '/static/img/apples.png', 1000
+);
+
+INSERT INTO item (
+    name, sku, barcode, type, size, description, is_sellable, is_digital, is_assemblable, is_disassemblable, image_url, weight
+) VALUES (
+    'Apple', 'APPLE-PC', 'APPLE-PC-BC', 'product', 'small',
+    'Fresh apples sold by piece (pc).',
+    1, 0, 0, 0, '/static/img/apple.png', 1000
+);
+
+
 INSERT OR IGNORE INTO hs_code (code, description) VALUES
+('080810', 'Apples, fresh'),
 ('847130', 'Portable automatic data processing machines, computers'),
 ('490199', 'Printed books, brochures, leaflets'),
 ('852349', 'Software licenses, digital media');
@@ -4047,6 +4129,34 @@ INSERT OR IGNORE INTO item_hs_country (item_id, hs_code_id, country_id) VALUES
 ((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='CH')),
 ((SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='BA'));
 
+INSERT INTO item_hs_country (item_id, hs_code_id, country_id)
+VALUES (
+    (SELECT id FROM item WHERE sku='APPLE-KG'),
+    (SELECT id FROM hs_code WHERE code='080810'),
+    (SELECT id FROM country WHERE code='DE')
+);
+
+INSERT INTO item_hs_country (item_id, hs_code_id, country_id)
+VALUES (
+    (SELECT id FROM item WHERE sku='APPLE-PC'),
+    (SELECT id FROM hs_code WHERE code='080810'),
+    (SELECT id FROM country WHERE code='DE')
+);
+
+-- VAT (percentage only)
+INSERT OR IGNORE INTO tax (name, percent, description, label, fixed_amount, fixed_currency_id, fixed_unit_id) VALUES
+('DE Standard VAT', 19.0, 'Standard VAT for Germany', 'USt.', NULL, NULL, NULL);
+
+-- Customs (fixed amount per kg, in EUR)
+INSERT OR IGNORE INTO tax (name, percent, description, label, fixed_amount, fixed_currency_id, fixed_unit_id) VALUES
+('DE Customs Duty', 0.0, 'Customs duty for Germany', 'Customs Duty', 2.5, (SELECT id FROM currency WHERE code='EUR'), (SELECT id FROM unit WHERE symbol='pc.'));
+
+INSERT INTO tax (name, percent, description, label, fixed_amount, fixed_currency_id, fixed_unit_id)
+VALUES (
+    'DE Customs Duty Apples', 0.0, 'Customs duty for apples in Germany', 'Customs Duty',
+    0.25, (SELECT id FROM currency WHERE code='EUR'), (SELECT id FROM unit WHERE symbol='pc.')
+);
+
 -- For computers (HS_CODE_847130), standard VAT in each country
 INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
 ((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE'), (SELECT id FROM tax WHERE name='DE Standard VAT')),
@@ -4061,15 +4171,21 @@ INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
 ((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='CH'), (SELECT id FROM tax WHERE name='CH Standard VAT')),
 ((SELECT id FROM hs_code WHERE code='852349'), (SELECT id FROM country WHERE code='BA'), (SELECT id FROM tax WHERE name='BA Standard VAT'));
 
--- Standard VAT for each country
-INSERT OR IGNORE INTO tax (name, percent, description, label) VALUES
-('DE Standard VAT', 19.0, 'Standard VAT for Germany', 'USt.'),
-('AT Standard VAT', 20.0, 'Standard VAT for Austria', 'MwSt.'),
-('CH Standard VAT', 7.7, 'Standard VAT for Switzerland', 'MWST/TVA/IVA'),
-('BA Standard VAT', 17.0, 'Standard VAT for Bosnia and Herzegovina', 'PDV'),
-('DE Reduced VAT', 7.0, 'Reduced VAT for Germany (books, food)', 'USt.'),
-('AT Reduced VAT', 10.0, 'Reduced VAT for Austria (food, books)', 'MwSt.'),
-('CH Reduced VAT', 2.5, 'Reduced VAT for Switzerland (food, books)', 'MWST/TVA/IVA');
+-- VAT for computers
+INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE'), (SELECT id FROM tax WHERE name='DE Standard VAT'));
+
+-- Customs for computers
+INSERT OR IGNORE INTO hs_country_tax (hs_code_id, country_id, tax_id) VALUES
+((SELECT id FROM hs_code WHERE code='847130'), (SELECT id FROM country WHERE code='DE'), (SELECT id FROM tax WHERE name='DE Customs Duty'));
+
+INSERT INTO hs_country_tax (hs_code_id, country_id, tax_id)
+VALUES (
+    (SELECT id FROM hs_code WHERE code='080810'),
+    (SELECT id FROM country WHERE code='DE'),
+    (SELECT id FROM tax WHERE name='DE Customs Duty Apples')
+);
+
 
 -- -- Seed discounts
 INSERT INTO discount (name, percent, amount, description) VALUES
@@ -4080,38 +4196,64 @@ INSERT INTO discount (name, percent, amount, description) VALUES
 -- -- Seed price list
 INSERT OR IGNORE INTO price_list (name, currency_id, valid_from, valid_to, country_id) VALUES
 ('Germany EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='DE')),
-('Austria EUR 2026', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='AT')),
+('Austria EUR 2025', (SELECT id FROM currency WHERE code='EUR'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='AT')),
 ('Switzerland CHF 2025', (SELECT id FROM currency WHERE code='CHF'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='CH')),
 ('Bosnia BAM 2025', (SELECT id FROM currency WHERE code='BAM'), '2025-01-01', '2025-12-31', (SELECT id FROM country WHERE code='BA'));
 
 -- -- Price list items
 -- Example items for Germany
-INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), 12.99),
-((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), 24.99),
-((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 74.99),
-((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 49.99);
+-- Per piece
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, unit_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM unit WHERE symbol='pc.'), 12.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM unit WHERE symbol='pc.'), 24.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM unit WHERE symbol='pc.'), 74.99),
+((SELECT id FROM price_list WHERE name='Germany EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM unit WHERE symbol='pc.'), 49.99);
 
 -- Example items for Austria
-INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SKU001'), 13.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SKU002'), 25.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 75.49),
-((SELECT id FROM price_list WHERE name='Austria EUR 2026'), (SELECT id FROM item WHERE sku='SW-PRO'), 52.99);
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, unit_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM unit WHERE symbol='pc.'), 13.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM unit WHERE symbol='pc.'), 25.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM unit WHERE symbol='pc.'), 75.49),
+((SELECT id FROM price_list WHERE name='Austria EUR 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM unit WHERE symbol='pc.'), 52.99);
 
 -- Example items for Switzerland
-INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU001'), 14.99),
-((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU002'), 27.99),
-((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 79.99),
-((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 59.99);
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, unit_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM unit WHERE symbol='pc.'), 14.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM unit WHERE symbol='pc.'), 27.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM unit WHERE symbol='pc.'), 79.99),
+((SELECT id FROM price_list WHERE name='Switzerland CHF 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM unit WHERE symbol='pc.'), 59.99);
 
 -- Example items for Bosnia
-INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, price) VALUES
-((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU001'), 10.99),
-((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU002'), 20.99),
-((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), 65.99),
-((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), 39.99);
+INSERT OR IGNORE INTO price_list_item (price_list_id, item_id, unit_id, price) VALUES
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU001'), (SELECT id FROM unit WHERE symbol='pc.'), 10.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SKU002'), (SELECT id FROM unit WHERE symbol='pc.'), 20.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='KIT-ALPHA'), (SELECT id FROM unit WHERE symbol='pc.'), 65.99),
+((SELECT id FROM price_list WHERE name='Bosnia BAM 2025'), (SELECT id FROM item WHERE sku='SW-PRO'), (SELECT id FROM unit WHERE symbol='pc.'), 39.99);
+
+INSERT INTO price_list_item (price_list_id, item_id, unit_id, price)
+VALUES (
+    (SELECT id FROM price_list WHERE name='Germany EUR 2025'),
+    (SELECT id FROM item WHERE sku='APPLE-KG'),
+    (SELECT id FROM unit WHERE symbol='kg'),
+    2.99
+);
+
+INSERT INTO price_list_item (price_list_id, item_id, unit_id, price)
+VALUES (
+    (SELECT id FROM price_list WHERE name='Germany EUR 2025'),
+    (SELECT id FROM item WHERE sku='APPLE-PC'),
+    (SELECT id FROM unit WHERE symbol='pc.'),
+    2.99
+);
+
+INSERT INTO price_list_item (price_list_id, item_id, unit_id, price)
+VALUES (
+    (SELECT id FROM price_list WHERE name='Bosnia BAM 2025'),
+    (SELECT id FROM item WHERE sku='APPLE-KG'),
+    (SELECT id FROM unit WHERE symbol='kg'),
+    5.99
+);
+
 
 -- -- Seed lots for each item
 INSERT INTO lot (item_id, lot_number, origin_model, origin_id, quality_control_status, notes)

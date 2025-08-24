@@ -38,6 +38,7 @@ window.selectedCurrency = 'EUR'; // default, or detect from user/IP
 function setCountryAndLanguage(country, language) {
     window.selectedCountry = country;
     window.selectedLanguage = language;
+    syncSettingsFields();
     // Call functions to update pricing, currency, language, taxes, carriers, etc.
     updateShopForCountry();
 }
@@ -63,6 +64,32 @@ async function loadItems() {
         const items = await resp.json();
         if (!Array.isArray(items)) throw new Error('Invalid items data');
         window.loadedItems = items;
+
+        // Remove cart items not available in the new country/currency
+        const availableIds = new Set(items.filter(item => typeof item.sales_price === "number" && !isNaN(item.sales_price)).map(item => item.id));
+        Object.keys(cart).forEach(id => {
+            if (!availableIds.has(Number(id))) {
+                delete cart[id];
+            }
+        });
+
+        // Update cart items with new currency/price/tax info
+        Object.values(cart).forEach(cartItem => {
+            const newItem = items.find(i => i.id === cartItem.id);
+            if (newItem) {
+                cartItem.price = newItem.sales_price;
+                cartItem.currency = newItem.sales_currency_code;
+                cartItem.sales_currency_symbol = newItem.sales_currency_symbol;
+                cartItem.tax_percents = newItem.tax_percents || [];
+                cartItem.tax_labels = newItem.tax_labels || [];
+                cartItem.tax_fixed_amounts = newItem.tax_fixed_amounts || [];
+                cartItem.tax_fixed_currencies = newItem.tax_fixed_currencies || [];
+                cartItem.tax_fixed_units = newItem.tax_fixed_units || [];
+                cartItem.unit_symbol = newItem.unit_symbol || '';
+                cartItem.unit_name = newItem.unit_name || 'unit';
+                cartItem.image_url = newItem.image_url || '';
+            }
+        });
         // Only display items that are sellable (avoid showing items not for sale)
         const sellableItems = items.filter(item => item.is_sellable === 1 || item.is_sellable === true);
         const itemList = document.getElementById('item-list');
@@ -70,7 +97,8 @@ async function loadItems() {
             itemList.innerHTML = '<span style="color:red">No sellable items available.</span>';
             return;
         }
-        renderShopItems(sellableItems);
+        renderShopItems(items.filter(item => item.is_sellable === 1 || item.is_sellable === true));
+        renderCart(); // <-- ensure cart is re-rendered after update
     } catch (e) {
         showPartnerError(`Error loading items: ${e.message}`);
     }
@@ -85,77 +113,224 @@ function renderCart() {
     }
     let total = 0;
     let totalTax = 0;
+    let taxTotals = {};
     cartList.innerHTML = `
         <div class="cart-grid">
             ${Object.values(cart).map(item => {
-                const taxPercent = item.tax_percent || 0;
-                const grossPrice = item.price * (1 + taxPercent / 100);
-                const subtotal = grossPrice * item.qty;
-                total += subtotal;
-                totalTax += (grossPrice - item.price) * item.qty;
+                let unitSymbol = item.unit_symbol || '';
+                let unitName = item.unit_name || 'unit';
+                let currencySymbol = item.sales_currency_symbol || item.currency || '€';
                 let periodStr = '';
                 if (item.service_window_id && item.window_period && item.window_unit) {
-                    periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
+                    periodStr = ` for ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
                 }
-                let currencySymbol = item.sales_currency_symbol || item.currency || '€';
+                const taxPercents = Array.isArray(item.tax_percents) ? item.tax_percents : [];
+                const taxFixeds = Array.isArray(item.tax_fixed_amounts) ? item.tax_fixed_amounts : [];
+                const taxLabels = Array.isArray(item.tax_labels) ? item.tax_labels : [item.tax_label].filter(Boolean);
+                const customsLabels = Array.isArray(item.customs_labels) ? item.customs_labels : [];
+                const taxFixedCurrencies = Array.isArray(item.tax_fixed_currencies) ? item.tax_fixed_currencies : [];
+                const taxFixedUnits = Array.isArray(item.tax_fixed_units) ? item.tax_fixed_units : [];
+                let netPrice = item.price;
+                let grossPrice = netPrice;
+                let itemTax = 0;
+
+                // Apply percentage taxes per label
+                taxPercents.forEach((percent, idx) => {
+                    if (percent) {
+                        const label = taxLabels[idx] || 'tax';
+                        const percentTax = netPrice * (percent / 100);
+                        // grossPrice += percentTax;
+                        // itemTax += percentTax;
+                        taxTotals[label] = (taxTotals[label] || 0) + percentTax * item.qty;
+                    }
+                });
+
+                // Apply fixed taxes per label
+                taxFixeds.forEach((amt, idx) => {
+                    const label = taxLabels[idx] || 'tax';
+                    // grossPrice += amt;
+                    // itemTax += amt;
+                    taxTotals[label] = (taxTotals[label] || 0) + amt * item.qty;
+                });
+
+                const subtotal = grossPrice * item.qty;
+                total += subtotal;
+                totalTax += itemTax * item.qty;
+
+                let fixedNotes = '';
+                if (taxFixeds.length) {
+                    fixedNotes = taxFixeds.map((amt, idx) => {
+                        const cur = taxFixedCurrencies[idx] || '';
+                        const unit = taxFixedUnits[idx] || '';
+                        return `<span class="cart-item-tax-tag">+${amt} ${cur} per ${unit}</span>`;
+                    }).join(' ');
+                }
+                // Card background image (greyed out)
+                let bgImage = item.image_url ? `background-image: url('${item.image_url}'); background-size: cover; background-position: center; filter: grayscale(0.9) opacity(0.12);` : '';
                 return `
-                    <div class="cart-item-card">
-                        <div class="cart-item-title">${item.name}</div>
-                        <div class="cart-item-meta">
-                            <span class="cart-item-sku">SKU: ${item.sku || ''}</span>
-                            <span class="cart-item-price">${currencySymbol} ${grossPrice.toFixed(2)}${periodStr} <span class="cart-item-tax">incl. ${item.tax_label || 'tax'}</span></span>
+                    <div class="cart-item-card" ${item.image_url ? `data-bg style="--cart-bg-image: url('${item.image_url}');"` : ''}>
+                        <div class="cart-item-image-row">
+                            ${item.image_url ? `<img src="${item.image_url}" class="cart-item-image" alt="${item.name}">` : ''}
                         </div>
-                        <div class="cart-item-qty">
-                            <label for="cart-qty-${item.id}" class="cart-qty-label">Quantity:</label>
-                            <input id="cart-qty-${item.id}" type="number" min="1" value="${item.qty}" class="cart-qty-input" onchange="updateCartQty(${item.id}, this.value)">
+                        <div class="cart-item-title-row" style="text-align:center;">
+                            <span class="cart-item-title">${item.name}</span>
                         </div>
-                        <div class="cart-item-subtotal">Subtotal: ${currencySymbol} ${subtotal.toFixed(2)}</div>
-                        <div class="cart-actions">
-                            <button class="cart-remove-btn" onclick="removeFromCart(${item.id})"><i class="fas fa-trash"></i> Remove</button>
+                        <div class="cart-item-meta" style="justify-content:center;">
+                            <span class="cart-item-sku">${item.sku || ''}</span>
+                        </div>
+                        <div class="cart-item-bottom">
+                            <div class="cart-item-price-row" style="text-align:center;">
+                                <span class="cart-item-price">
+                                    ${currencySymbol} ${item.price.toFixed(2)}${unitSymbol ? ' / ' + unitSymbol : ''}${periodStr}
+                                </span>
+                            </div>
+                            <div class="cart-item-tax-row" style="text-align:center;">
+                                ${taxLabels.map((label, idx) => {
+                                    let percent = taxPercents[idx] ? `${taxPercents[idx].toFixed(2)}%` : '';
+                                    let fixed = taxFixeds[idx] ? `<span class="cart-item-tax-tag">+${taxFixeds[idx]} ${taxFixedCurrencies[idx] || ''} per ${taxFixedUnits[idx] || ''}</span>` : '';
+                                    return `<span class="cart-item-tax-tag">${label}${percent ? ` (${percent})` : ''}${fixed ? ` ${fixed}` : ''}</span>`;
+                                }).join(' ')}
+                                ${customsLabels.map(customs => 
+                                    `<span class="cart-item-tax-tag">${customs}</span>`
+                                ).join('')}
+                            </div>
+                            <div class="cart-item-qty-row" style="justify-content:center;">
+                                <button class="cart-remove-btn" onclick="removeFromCart(${item.id})"><strong><i class="fas fa-trash">X</i></strong></button>
+                                <input id="cart-qty-${item.id}" type="number" min="1" value="${item.qty}" class="cart-qty-input" onchange="updateCartQty(${item.id}, this.value)">
+                                <label for="cart-qty-${item.id}" class="cart-qty-label">${unitName}</label>
+                            </div>
+                            <div class="cart-item-subtotal" style="font-size:1.15rem;color:#4f8cff;font-weight:700;text-align:center;">
+                                Subtotal: ${currencySymbol} ${(item.price * item.qty).toFixed(2)}
+                            </div>
                         </div>
                     </div>
                 `;
             }).join('')}
         </div>
-        <div class="cart-total">Total: <b>${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${total.toFixed(2)}</b> <span class="cart-total-tax">incl. total tax: ${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${totalTax.toFixed(2)}</span></div>
-
+        <div class="cart-total">
+            <span class="cart-total-sum">
+                Total: <b>${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${total.toFixed(2)}</b>
+            </span>
+            <span class="cart-total-tax">
+                ${Object.values(cart)[0].tax_labels && Object.values(cart)[0].tax_labels.length
+                    ? `incl. ${Object.values(cart)[0].tax_labels.join(', ')}`
+                    : ''}
+            </span>
+            <div class="cart-total-tax-labels" style="font-size:0.95em;color:#888;margin-top:2px;">
+                Taxes applied:<br>
+                ${Object.entries(taxTotals).map(([label, sum]) =>
+                    `<span class="cart-item-tax-tag">${label}: ${Object.values(cart)[0].sales_currency_symbol || Object.values(cart)[0].currency || '€'} ${sum.toFixed(2)}</span>`
+                ).join(' ')}
+            </div>
+        </div>
     `;
 }
+
+
+let unitCategoryMap = {};
+
+async function fetchUnitCategoryMap() {
+    try {
+        const resp = await fetch('/units');
+        if (resp.ok) {
+            unitCategoryMap = await resp.json();
+        }
+    } catch (e) {
+        unitCategoryMap = {
+            'pc.': 'units',
+            'kg': 'weight',
+            'g': 'weight',
+            'lb': 'weight',
+            'm': 'length',
+            'mm': 'length',
+            'ft': 'length'
+        };
+    }
+}
+
+// Call this before rendering shop items
+document.addEventListener('DOMContentLoaded', async function() {
+    await fetchUnitCategoryMap();
+    loadItems();
+    renderCart();
+});
 
 // Example for item rendering in returns.js or a new shop.js
 function renderShopItems(items) {
     const grid = document.getElementById("item-list");
     grid.innerHTML = "";
     items.forEach(item => {
+        let available = typeof item.sales_price === "number" && !isNaN(item.sales_price);
+
+        // --- Check for incompatible per-unit taxes/customs ---
+        let priceUnitSymbol = item.unit_symbol || item.unit || '';
+        let priceUnitCategory = unitCategoryMap[priceUnitSymbol] || null;
+
+        let incompatibleTax = false;
+        if (item.tax_fixed_units && item.tax_fixed_units.length) {
+            item.tax_fixed_units.forEach((taxUnitSymbol, idx) => {
+                if (taxUnitSymbol) {
+                    let taxUnitCategory = unitCategoryMap[taxUnitSymbol] || null;
+                    if (taxUnitCategory && priceUnitCategory && taxUnitCategory !== priceUnitCategory) {
+                        incompatibleTax = true;
+                    }
+                }
+            });
+        }
+
+        // If incompatible, mark as unavailable
+        if (incompatibleTax) available = false;
+
+        let currencySymbol = item.sales_currency_symbol || item.sales_currency_code || '€';
+        let countryName = document.getElementById('shop-country-select').selectedOptions[0].textContent;
+        let unitSymbol = priceUnitSymbol;
+        let taxLabels = Array.isArray(item.tax_labels) ? item.tax_labels : [item.tax_label].filter(Boolean);
+        let taxNote = taxLabels.length
+            ? `<div class="shop-item-tax-note" style="font-size:0.95em;color:#888;margin-top:2px;">
+                ${available ? 'incl.' : 'excl.'} ${taxLabels.join(', ')}
+               </div>`
+            : '';
         let periodStr = '';
         if (item.service_window_id && item.window_period && item.window_unit) {
-            periodStr = ` / ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
+            periodStr = ` for ${item.window_period} ${item.window_unit}${item.window_period > 1 ? 's' : ''}`;
         }
-        // Calculate gross price (including tax)
-        let grossPrice = item.sales_price;
-        if (item.tax_percent) {
-            grossPrice = Number(item.sales_price) * (1 + Number(item.tax_percent) / 100);
+
+        // Distinguish warning message
+        let unavailableMsg = '';
+        if (!available) {
+            if (!priceUnitSymbol || !priceUnitCategory) {
+                unavailableMsg = `<div class="shop-item-unavailable-msg">Currently unavailable<br/>in ${countryName}</div>`;
+            } else if (incompatibleTax) {
+                unavailableMsg = `<div class="shop-item-unavailable-msg">Currently unavailable<br/>due to tax/customs restrictions</div>`;
+            } else {
+                unavailableMsg = `<div class="shop-item-unavailable-msg">Currently unavailable<br/>in ${countryName}</div>`;
+            }
         }
-        // Use currency symbol if available
-        let currencySymbol = item.sales_currency_symbol || item.sales_currency_code || '€';
+
         grid.innerHTML += `
-            <div class="shop-item-card">
+            <div class="shop-item-card${!available ? ' shop-item-unavailable' : ''}">
                 <div class="shop-item-image-wrap">
                     <img class="shop-item-image" src="${item.image_url || '/static/img/placeholder.png'}" alt="${item.name}">
                 </div>
                 <div class="shop-item-title">${item.name}</div>
-                <div class="shop-item-desc">${item.description || '<span style=\"color:#aaa\">No description available.</span>'}</div>
-                <div class="shop-item-meta">
-                    <span class="shop-item-sku">SKU: ${item.sku}</span>
-                    ${item.stock !== undefined ? `<span class="shop-item-stock ${item.stock > 0 ? 'in-stock' : 'out-stock'}">${item.stock > 0 ? 'In stock' : 'Out of stock'}</span>` : ''}
+                <div class="shop-item-sku-row" style="text-align:center;">
+                    <span class="shop-item-sku">${item.sku}</span>
                 </div>
-                <div class="shop-item-price">
-                    ${item.sales_price ? `${currencySymbol} ${grossPrice.toFixed(2)} <span class="shop-item-tax">incl. ${item.tax_label || 'tax'}</span>` : ''}
-                    ${periodStr}
+                <div class="shop-item-desc" style="display:block;text-align:left;margin-bottom:12px;">
+                    ${item.description || '<span style="color:#aaa">No description available.</span>'}
                 </div>
-                <button class="shop-item-add-btn" onclick="addToCart(${item.id}, '${item.name.replace(/'/g, "\\'")}', ${grossPrice || 0}, '${item.sales_currency_code || ''}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1}, '${item.sku || ''}', ${item.is_digital ? 'true' : 'false'})">
-                    <i class="fas fa-cart-plus"></i> Add to Cart
-                </button>
+                <div class="shop-item-bottom">
+                    <div class="shop-item-price">
+                        ${available ? `${currencySymbol} ${item.sales_price_incl_tax.toFixed(2)}${unitSymbol ? ' / ' + unitSymbol : ''}${periodStr}` : ''}
+                        ${taxNote}
+                    </div>
+                    ${available
+                        ? `<button class="shop-item-add-btn" style="margin-top:12px;" onclick="addToCart(${item.id}, '${item.name.replace(/'/g, "\\'")}', ${item.sales_price_incl_tax || 0}, '${item.sales_currency_code || ''}', ${item.sales_currency_id || 1}, ${item.cost || 0}, ${item.cost_currency_id || item.sales_currency_id || 1}, '${item.sku || ''}', ${item.is_digital ? 'true' : 'false'})">
+                            <i class="fas fa-cart-plus"></i> Add to Cart
+                          </button>`
+                        : unavailableMsg
+                    }
+                </div>
             </div>
         `;
     });
@@ -236,7 +411,6 @@ function updateConfirmPayBtn() {
 
 window.addToCart = function(id, name, price, currency, currency_id, cost, cost_currency_id, sku, is_digital) {
     const itemData = window.loadedItems.find(i => i.id === id);
-    console.log("Adding to cart:", id, name, price, currency, currency_id, cost, cost_currency_id, sku, is_digital);
     if (!cart[id]) cart[id] = {
         id,
         name,
@@ -250,11 +424,26 @@ window.addToCart = function(id, name, price, currency, currency_id, cost, cost_c
         is_digital,
         service_window_id: itemData?.service_window_id || null,
         window_period: itemData?.window_period || null,
-        window_unit: itemData?.window_unit || null
+        window_unit: itemData?.window_unit || null,
+        tax_percents: itemData?.tax_percents || [],
+        tax_labels: itemData?.tax_labels || [],
+        tax_fixed_amounts: itemData?.tax_fixed_amounts || [],
+        tax_fixed_currencies: itemData?.tax_fixed_currencies || [],
+        tax_fixed_units: itemData?.tax_fixed_units || [],
+        unit_symbol: itemData?.unit_symbol || '',
+        unit_name: itemData?.unit_name || 'unit',
+        image_url: itemData?.image_url || ''
     };
     cart[id].qty += 1;
     renderCart();
     resetCheckoutFlow();
+
+    // Satisfying effect: pulse the cart
+    const cartList = document.getElementById('cart-list');
+    if (cartList) {
+        cartList.classList.add('cart-pulse');
+        setTimeout(() => cartList.classList.remove('cart-pulse'), 600);
+    }
 };
 
 window.updateCartQty = function(id, qty) {
@@ -435,7 +624,6 @@ document.getElementById('cancel-checkout-btn').onclick = function() {
 
 document.getElementById('confirm-data-btn').onclick = async function(e) {
     e.preventDefault();
-
     addressConfirmed = true;
     syncPartnerFields();
     
@@ -453,6 +641,22 @@ document.getElementById('confirm-data-btn').onclick = async function(e) {
 
     // Gather address data
     const partner = await getPartnerData();
+
+    // Set country for shipping only if shipping is selected
+    const deliveryType = document.querySelector('input[name="delivery"]:checked').value;
+    if (deliveryType === 'ship') {
+        window.selectedCountry = document.getElementById('partner-country').value;
+        syncSettingsFields();
+    } else if (deliveryType === 'pickup' || deliveryType === 'digital') {
+        // Set to company partner country (assuming you have it from /company/address)
+        const companyResp = await fetch('/company/address');
+        if (companyResp.ok) {
+            const companyData = await companyResp.json();
+            if (companyData.country) window.selectedCountry = companyData.country;
+            syncSettingsFields();
+        }
+    }
+
 
     // 1. Create partner/customer
     let partnerId = null;
@@ -478,8 +682,6 @@ document.getElementById('confirm-data-btn').onclick = async function(e) {
         showPartnerError(err.message);
         return;
     }
-
-    let deliveryType = document.querySelector('input[name="delivery"]:checked').value;
 
     // Only book pickup slot if pickup is selected
     if (deliveryType === 'pickup' && reservedPickupBooking) {
@@ -1143,18 +1345,29 @@ function sortRates(rates, sortType) {
 }
 
 // Render rates with sorting/filtering
-function renderShippingRates(rates, sortType = 'cheapest', page = 0, initiallySelectCheapest = true) {
+async function renderShippingRates(rates, sortType = 'cheapest', page = 0, initiallySelectCheapest = true) {
     const shippingRateList = document.getElementById('shipping-rate-list');
     if (!shippingRateList) return;
     shippingRateList.innerHTML = '';
 
-    // Sort rates
-    const sortedRates = sortRates(rates, sortType);
+    const currencyRates = await getCurrencyRates();
+    const selectedCurrency = window.selectedCurrency || 'USD';
+    const selectedSymbol = {
+        'USD': '$', 'EUR': '€', 'CHF': 'Fr', 'BAM': 'KM', 'GBP': '£'
+    }[selectedCurrency] || '$';
 
-    // Pagination
+    const taxNote = await getShippingItemTaxNote();
+
+    const sortedRates = sortRates(rates, sortType);
     const totalPages = Math.ceil(sortedRates.length / SHIPPING_RATE_PAGE_SIZE);
     const pageRates = sortedRates.slice(page * SHIPPING_RATE_PAGE_SIZE, (page + 1) * SHIPPING_RATE_PAGE_SIZE);
+
     pageRates.forEach((rate, idx) => {
+        let amount = parseFloat(rate.amount);
+        let rateCur = rate.currency || 'USD';
+        if (rateCur !== selectedCurrency) {
+            amount = amount * (currencyRates[selectedCurrency] / currencyRates[rateCur]);
+        }
         const globalIdx = page * SHIPPING_RATE_PAGE_SIZE + idx + 1;
         const isSelected =
             selectedShippingRate && selectedShippingRate.object_id === rate.object_id ||
@@ -1167,7 +1380,7 @@ function renderShippingRates(rates, sortType = 'cheapest', page = 0, initiallySe
             <div class="shipping-rate-provider">${rate.provider}</div>
             <div class="shipping-rate-stars">${renderStars(rate.rating || 0)}</div>
             <div class="shipping-rate-service">${rate.servicelevel}</div>
-            <div class="shipping-rate-price">${rate.amount} ${rate.currency}</div>
+            <div class="shipping-rate-price">${amount.toFixed(2)} ${selectedSymbol} ${taxNote}</div>
             <div class="shipping-rate-duration">${rate.duration_terms ? rate.duration_terms : ''}</div>
         `;
         card.onclick = function() {
@@ -1175,27 +1388,26 @@ function renderShippingRates(rates, sortType = 'cheapest', page = 0, initiallySe
             card.classList.add('selected');
             selectedShippingRate = {
                 object_id: rate.object_id,
-                amount: rate.amount,
-                currency: rate.currency,
+                amount: amount,
+                currency: selectedCurrency,
                 provider: rate.provider,
                 servicelevel: rate.servicelevel,
                 duration_terms: rate.duration_terms || '',
-                tax_included: rate.tax_included || false,
+                tax_included: taxNote.includes('incl.'),
                 rating: rate.rating || 0
             };
             updateShippingRateInfo(selectedShippingRate);
             document.getElementById('confirm-shipping-btn').disabled = false;
         };
-        // Set selectedShippingRate and info only if initially selecting cheapest
         if (isSelected && initiallySelectCheapest) {
             selectedShippingRate = {
                 object_id: rate.object_id,
-                amount: rate.amount,
-                currency: rate.currency,
+                amount: amount,
+                currency: selectedCurrency,
                 provider: rate.provider,
                 servicelevel: rate.servicelevel,
                 duration_terms: rate.duration_terms || '',
-                tax_included: rate.tax_included || false,
+                tax_included: taxNote.includes('incl.'),
                 rating: rate.rating || 0
             };
             updateShippingRateInfo(selectedShippingRate);
@@ -1204,7 +1416,6 @@ function renderShippingRates(rates, sortType = 'cheapest', page = 0, initiallySe
         shippingRateList.appendChild(card);
     });
 
-    // Render pagination controls
     renderShippingRatePagination(totalPages, page, sortType, sortedRates);
 }
 
@@ -1253,7 +1464,7 @@ function updateShippingRateInfo(rate) {
         infoDiv.innerHTML = '';
         return;
     }
-    let priceStr = `<span class="shipping-rate-info-price">${rate.amount} ${rate.currency}</span>`;
+    let priceStr = `<span class="shipping-rate-info-price">${rate.amount.toFixed(2)} ${rate.currency}</span>`;
     let taxStr = `<span class="shipping-rate-info-tax">${rate.tax_included ? 'incl. tax' : 'excl. tax'}</span>`;
     let providerStr = `<span>${rate.provider} - ${rate.servicelevel}</span>`;
     let durationStr = rate.duration_terms ? `<span style="color:#888;">${rate.duration_terms}</span>` : '';
@@ -1737,14 +1948,17 @@ document.addEventListener('DOMContentLoaded', function() {
     
 document.addEventListener('DOMContentLoaded', function() {
     // Moved from HTML <script>
-    fetch('/company/name')
+    fetch('/company/address')
         .then(resp => resp.json())
         .then(data => {
-        if (data.name) {
-            document.title = data.name;
-            const heading = document.querySelector('.shop-header h2');
-            if (heading) heading.textContent = data.name;
-        }
+            if (data.logo_url) {
+                const logo = document.getElementById('shop-company-logo');
+                if (logo) logo.src = data.logo_url;
+            }
+            if (data.name) {
+                const entity = document.querySelector('.shop-title-entity');
+                if (entity) entity.textContent = data.name;
+            }
         });
 
     fetch('/company/address')
@@ -2068,20 +2282,15 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-async function onCountryChange(countryCode) {
-    // Fetch country info from backend
-    const resp = await fetch(`/country-info?country=${countryCode}`);
+
+async function getCountryId(code) {
+    const resp = await fetch(`/country-info?country=${code}`);
     if (resp.ok) {
         const info = await resp.json();
-        window.selectedCountry = info.code;
-        window.selectedCurrency = info.currency_code;
-        window.selectedLanguage = info.language || 'en';
-        // Reload items with new currency
-        await loadItems();
-        renderCart();
+        return info.id; // Add 'id' to your /country-info endpoint response
     }
+    return null;
 }
-
 
 // Attach to country dropdowns
 document.addEventListener('DOMContentLoaded', function() {
@@ -2104,11 +2313,294 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-async function getCountryId(code) {
-    const resp = await fetch(`/country-info?country=${code}`);
+document.addEventListener('DOMContentLoaded', async function() {
+    const langSelect = document.getElementById('shop-language-select');
+    const countrySelect = document.getElementById('shop-country-select');
+    const currencySelect = document.getElementById('shop-currency-select');
+    const langFlag = document.getElementById('shop-language-flag');
+
+    // Detect browser language
+    const browserLang = navigator.language ? navigator.language.slice(0,2) : 'en';
+    window.selectedLanguage = browserLang;
+
+    // Detect country/currency from IP (using ipapi.co)
+    try {
+        const resp = await fetch('https://ipapi.co/json/');
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data.country) window.selectedCountry = data.country;
+            if (data.currency) window.selectedCurrency = data.currency;
+        }
+    } catch (e) {}
+
+    // Sync select fields to variables and update flag/color
+    syncSettingsFields();
+
+    // Change handlers: update variable, trigger UI updates
+    if (langSelect) langSelect.onchange = function() {
+        window.selectedLanguage = this.value;
+        updateLangFlagAndStyle();
+    };
+    if (countrySelect) countrySelect.onchange = function() {
+        window.selectedCountry = this.value;
+        resetToShop();
+        onCountryChange(this.value);
+    };
+    if (currencySelect) currencySelect.onchange = function() {
+        window.selectedCurrency = this.value;
+        resetToShop();
+        loadItems();
+        renderCart();
+    };
+
+    // Initial load
+    loadItems();
+    renderCart();
+
+    function resetToShop() {
+        document.getElementById('address-section').style.display = 'none';
+        document.getElementById('shipping-section').style.display = 'none';
+        document.getElementById('payment-section').style.display = 'none';
+        cartConfirmed = false;
+        addressConfirmed = false;
+        carrierConfirmed = false;
+        paymentConfirmed = false;
+    }
+
+    function updateLangFlagAndStyle() {
+        if (!langSelect || !langFlag) return;
+        const selected = langSelect.selectedOptions[0];
+        langFlag.textContent = selected.getAttribute('data-flag') || '🏳️';
+        langSelect.classList.remove('language-de', 'language-fr', 'language-en', 'language-bs');
+        if (selected.className) {
+            langSelect.classList.add(selected.className);
+        }
+    }
+
+    function syncSettingsFields() {
+        const langSelect = document.getElementById('shop-language-select');
+        const countrySelect = document.getElementById('shop-country-select');
+        const currencySelect = document.getElementById('shop-currency-select');
+        if (langSelect && langSelect.value !== window.selectedLanguage) langSelect.value = window.selectedLanguage;
+        if (countrySelect && countrySelect.value !== window.selectedCountry) countrySelect.value = window.selectedCountry;
+        if (currencySelect && currencySelect.value !== window.selectedCurrency) currencySelect.value = window.selectedCurrency;
+        updateLangFlagAndStyle();
+    }
+
+    async function onCountryChange(countryCode) {
+        // Fetch country info from backend
+        const resp = await fetch(`/country-info?country=${countryCode}`);
+        if (resp.ok) {
+            const info = await resp.json();
+            window.selectedCountry = info.code;
+            window.selectedCurrency = info.currency_code;
+            window.selectedLanguage = info.language || 'en';
+            syncSettingsFields();
+            // Reload items with new currency
+            await loadItems();
+            renderCart();
+        }
+    }
+
+});
+
+// document.addEventListener('DOMContentLoaded', async function() {
+//     // Detect browser language
+//     const browserLang = navigator.language ? navigator.language.slice(0,2) : 'en';
+//     window.selectedLanguage = browserLang;
+//     syncSettingsFields();
+
+//     // Detect country/currency from IP (using ipapi.co)
+//     try {
+//         const resp = await fetch('https://ipapi.co/json/');
+//         if (resp.ok) {
+//             const data = await resp.json();
+//             if (data.country) window.selectedCountry = data.country;
+//             if (data.currency) window.selectedCurrency = data.currency;
+//             syncSettingsFields();
+//         }
+//     } catch (e) {}
+
+//     // Set select fields to match global variables
+//     const langSelect = document.getElementById('shop-language-select');
+//     const countrySelect = document.getElementById('shop-country-select');
+//     const currencySelect = document.getElementById('shop-currency-select');
+//     const langFlag = document.getElementById('shop-language-flag');
+
+//     if (langSelect && langFlag) {
+//         langSelect.onchange = function() {
+//             updateLangFlagAndStyle();
+//             window.selectedLanguage = this.value;
+//             langSelect.value = this.value;            
+//             loadItems();
+//             renderCart();
+//         };
+//         updateLangFlagAndStyle();
+//     }
+
+//     function updateLangFlagAndStyle() {
+//         const langSelect = document.getElementById('shop-language-select');
+//         const langFlag = document.getElementById('shop-language-flag');
+//         if (!langSelect || !langFlag) return;
+//         const selected = langSelect.selectedOptions[0];
+//         langFlag.textContent = selected.getAttribute('data-flag') || '🏳️';
+//         langSelect.classList.remove('language-de', 'language-fr', 'language-en', 'language-bs');
+//         if (selected.className) {
+//             langSelect.classList.add(selected.className);
+//         }
+//     }
+
+//     if (langSelect) langSelect.value = window.selectedLanguage;
+//     if (countrySelect) countrySelect.value = window.selectedCountry;
+//     if (currencySelect) currencySelect.value = window.selectedCurrency;
+//     function resetToShop() {
+//         document.getElementById('address-section').style.display = 'none';
+//         document.getElementById('shipping-section').style.display = 'none';
+//         document.getElementById('payment-section').style.display = 'none';
+//         cartConfirmed = false;
+//         addressConfirmed = false;
+//         carrierConfirmed = false;
+//         paymentConfirmed = false;
+//     }
+//     // On change handlers: update both global and select fields
+//     if (langSelect) langSelect.onchange = function() {
+//         window.selectedLanguage = this.value;
+//         langSelect.value = this.value;
+//         loadItems();
+//         renderCart();
+//     };
+//     if (countrySelect) countrySelect.onchange = function() {
+//         window.selectedCountry = this.value;
+//         countrySelect.value = this.value;
+//         resetToShop();
+//         onCountryChange(this.value);
+//     };
+//     if (currencySelect) currencySelect.onchange = function() {
+//         window.selectedCurrency = this.value;
+//         currencySelect.value = this.value;
+//         resetToShop();
+//         loadItems();
+//         renderCart();
+//     };
+
+//     // Initial load
+//     // After setting window.selectedLanguage, window.selectedCountry, window.selectedCurrency:
+//     syncSettingsFields();
+//     loadItems();
+//     renderCart();
+// });
+
+async function getCurrencyRates() {
+    const resp = await fetch('/currency-rates');
+    if (resp.ok) {
+        return await resp.json(); // { USD: 1.16, EUR: 1.0, ... }
+    }
+    // fallback if backend fails
+    return { USD: 1.16, EUR: 1.0, CHF: 0.94, BAM: 1.96, GBP: 0.86 };
+}
+
+async function getShippingItemTaxNote() {
+    // Assume shipping item SKU is 'SHIP-001'
+    const resp = await fetch('/items/by-sku/SHIP-001');
+    if (resp.ok) {
+        const item = await resp.json();
+        if (item && Array.isArray(item.tax_labels) && item.tax_labels.length) {
+            return `<span style="color:#888;font-size:0.95em;">incl. ${item.tax_labels.join(', ')}</span>`;
+        }
+    }
+    return '<span style="color:#888;font-size:0.95em;">excl. tax</span>';
+}
+
+// document.addEventListener('DOMContentLoaded', function() {
+//     const langSelect = document.getElementById('shop-language-select');
+//     const langFlag = document.getElementById('shop-language-flag');
+//     function updateLangFlagAndStyle() {
+//         const langSelect = document.getElementById('shop-language-select');
+//         const langFlag = document.getElementById('shop-language-flag');
+//         if (!langSelect || !langFlag) return;
+//         const selected = langSelect.selectedOptions[0];
+//         langFlag.textContent = selected.getAttribute('data-flag') || '🏳️';
+//         langSelect.classList.remove('language-de', 'language-fr', 'language-en', 'language-bs');
+//         if (selected.className) {
+//             langSelect.classList.add(selected.className);
+//         }
+//     }
+//     if (langSelect && langFlag) {
+//         langSelect.onchange = function() {
+//             updateLangFlagAndStyle();
+//             window.selectedLanguage = this.value;
+//             langSelect.value = this.value;            
+//             syncSettingsFields();
+//             loadItems();
+//             renderCart();
+//         };
+//         updateLangFlagAndStyle();
+//     }
+//     syncSettingsFields();
+// });
+
+function syncSettingsFields() {
+    const langSelect = document.getElementById('shop-language-select');
+    const countrySelect = document.getElementById('shop-country-select');
+    const currencySelect = document.getElementById('shop-currency-select');
+    if (langSelect && langSelect.value !== window.selectedLanguage) langSelect.value = window.selectedLanguage;
+    if (countrySelect && countrySelect.value !== window.selectedCountry) countrySelect.value = window.selectedCountry;
+    if (currencySelect && currencySelect.value !== window.selectedCurrency) currencySelect.value = window.selectedCurrency;
+    updateLangFlagAndStyle();
+}
+
+// document.addEventListener('DOMContentLoaded', function() {
+//     const langSelect = document.getElementById('shop-language-select');
+//     const countrySelect = document.getElementById('shop-country-select');
+//     const currencySelect = document.getElementById('shop-currency-select');
+
+//     // On change: update variable, sync fields, and update style
+//     if (langSelect) langSelect.onchange = function() {
+//         window.selectedLanguage = this.value;
+//         loadItems();
+//         renderCart();
+//     };
+//     if (countrySelect) countrySelect.onchange = function() {
+//         window.selectedCountry = this.value;
+//         resetToShop();
+//         onCountryChange(this.value);
+//     };
+//     if (currencySelect) currencySelect.onchange = function() {
+//         window.selectedCurrency = this.value;
+//         resetToShop();
+//         loadItems();
+//         renderCart();
+//     };
+
+//     // On variable change (call syncSettingsFields after any auto-detection or programmatic change)
+//     syncSettingsFields();
+// });
+
+// Place these at the top level, outside any event listener:
+function updateLangFlagAndStyle() {
+    const langSelect = document.getElementById('shop-language-select');
+    const langFlag = document.getElementById('shop-language-flag');
+    if (!langSelect || !langFlag) return;
+    const selected = langSelect.selectedOptions[0];
+    langFlag.textContent = selected.getAttribute('data-flag') || '🏳️';
+    langSelect.classList.remove('language-de', 'language-fr', 'language-en', 'language-bs');
+    if (selected.className) {
+        langSelect.classList.add(selected.className);
+    }
+}
+
+
+async function onCountryChange(countryCode) {
+    // Fetch country info from backend
+    const resp = await fetch(`/country-info?country=${countryCode}`);
     if (resp.ok) {
         const info = await resp.json();
-        return info.id; // Add 'id' to your /country-info endpoint response
+        window.selectedCountry = info.code;
+        window.selectedCurrency = info.currency_code;
+        window.selectedLanguage = info.language || 'en';
+        syncSettingsFields();
+        // Reload items with new currency
+        await loadItems();
+        renderCart();
     }
-    return null;
 }

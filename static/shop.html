@@ -2,11 +2,48 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Shop</title>
+  <title>Alp Wolf Shop</title>
+  <link rel="shortcut icon" href="/static/img/d7f87fafb82fdb7eb3dea7d3fbed5cec/favicon.ico" type="image/x-icon">
+  <link rel="icon" href="/static/img/d7f87fafb82fdb7eb3dea7d3fbed5cec/favicon.ico" type="image/x-icon">
   <link rel="stylesheet" href="/static/css/style.css">
   <script src="https://kit.fontawesome.com/7e2c6b8e7e.js" crossorigin="anonymous"></script>
 </head>
 <body class="shop-bg">
+  <!-- Place this at the very top of your <body> -->
+  <div id="shop-settings-bar" class="shop-settings-bar">
+      <label for="shop-language-select" class="shop-settings-label">
+          <span class="shop-settings-flag" id="shop-language-flag">🇩🇪</span>
+          Language:
+      </label>
+      <select id="shop-language-select" class="shop-settings-select shop-settings-language">
+          <option value="de" data-flag="🇩🇪" class="language-de">Deutsch</option>
+          <option value="fr" data-flag="🇫🇷" class="language-fr">Français</option>
+          <option value="en" data-flag="🇬🇧" class="language-en">English</option>
+          <option value="bs" data-flag="🇧🇦" class="language-bs">Bosanski</option>
+      </select>
+
+      <label for="shop-country-select" class="shop-settings-label">
+          <i class="fas fa-shipping-fast"></i> Delivery Country:
+      </label>
+      <select id="shop-country-select" class="shop-settings-select">
+          <option value="DE">Germany</option>
+          <option value="AT">Austria</option>
+          <option value="CH">Switzerland</option>
+          <option value="BA">Bosnia</option>
+      </select>
+
+      <label for="shop-currency-select" class="shop-settings-label">
+          <i class="fas fa-coins"></i> Currency:
+      </label>
+      <select id="shop-currency-select" class="shop-settings-select">
+          <option value="EUR">EUR (€)</option>
+          <option value="USD">USD ($)</option>
+          <option value="CHF">CHF (Fr)</option>
+          <option value="BAM">BAM (KM)</option>
+          <option value="GBP">GBP (£)</option>
+      </select>
+  </div>
+
   <div class="shop-main-card">
     
     <div id="buy-result" style="display:none;">
@@ -20,8 +57,17 @@
     <!-- Header -->
     <div class="shop-header">
       <span class="shop-icon"><i class="fas fa-store"></i></span>
-      <h2>Shop</h2>
-      <a href="/" class="shop-back-link"><i class="fas fa-arrow-left"></i> Enter Warehouse</a>
+      <img id="shop-company-logo" src="/static/img/company-logo.png" alt="Company Logo" class="shop-company-logo">
+      <span class="shop-title-main">
+        <span class="shop-title-entity">AlpWolf GmbH</span>
+        <span class="shop-title-shop">Shop</span>
+      </span>
+      <br/>
+<a href="/" class="shop-back-link">
+    <i class="fas fa-arrow-left"></i> Enter Warehouse
+    <i class="fas fa-sign-out-alt" style="margin-left:6px;font-size:1.1em;vertical-align:middle;"></i>
+    <i class="fas fa-arrow-right" style="margin-left:4px;font-size:1.1em;vertical-align:middle;color:#1565c0;"></i>
+</a>
     </div>
 
     <!-- Item List -->
@@ -29,8 +75,9 @@
       <!-- Item cards will be rendered here by JS -->
     </div>
 
-    <hr style="margin:24px 0;">
-    <h4>Cart</h4>
+    <div class="cart-divider">
+      <span class="cart-title"><i class="fas fa-shopping-cart"></i> Your Shopping Cart</span>
+    </div>
     <div id="cart-list" class="cart-fancy"></div>
 
     <!-- Step 1: Cart Actions -->
@@ -165,8 +212,10 @@
                           <select id="partner-country" required>
                             <option>select country</option>
                             <option value="AT">Austria</option>
-                            <option value="FR">France</option>
                             <option value="DE">Germany</option>
+                            <option value="CH">Switzerland</option>
+                            <option value="FR">France</option>
+                            <option value="BA">Bosnia</option>
                             <option value="GH">Ghana</option>
                           </select>
                           <!-- <input id="partner-country" placeholder="Country" required> -->
@@ -233,8 +282,10 @@
                           <select id="partner-billing-country" required>
                             <option>select country</option>
                             <option value="AT">Austria</option>
-                            <option value="FR">France</option>
                             <option value="DE">Germany</option>
+                            <option value="CH">Switzerland</option>
+                            <option value="FR">France</option>
+                            <option value="BA">Bosnia</option>
                             <option value="GH">Ghana</option>
                           </select>
                           <span class="required-marker">*</span>

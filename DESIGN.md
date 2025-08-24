@@ -16,7 +16,7 @@ This system includes:
 - Assigning employees to track item movements
 
 ## Entity Relationship Diagram
-![ERD](erd.png)
+![Warehouse Management System](/docs/warehouse_mermaid_erd_hierachical.svg)
 
 ## Entities & Relationships
 
@@ -48,3 +48,5 @@ Relationships:
 - GitHub: fungos34
 - edX Username: johannes_34
 - Country: Austria
+
+## ERD

@@ -353,64 +353,115 @@ def get_item_vendor(item_id: int):
             raise HTTPException(status_code=404, detail="Vendor not found for this item")
         return {"vendor_id": row["vendor_id"]}
     
-    
 @router.get("/items", tags=["Catalog"])
 def get_items(country_code: str = None, currency_code: str = None):
     with get_conn() as conn:
-        # Find the latest valid price list for the selected country/currency
+        # Get all sellable items
+        items = conn.execute("""
+            SELECT 
+                i.id, i.name, i.sku, i.vendor_id, i.cost, i.is_sellable, i.is_digital,
+                i.is_assemblable, i.is_disassemblable, i.description, i.image_url,
+                i.service_window_id, sw.timedelta AS window_period, sw.unit_time AS window_unit
+            FROM item i
+            LEFT JOIN service_window sw ON i.service_window_id = sw.id
+            WHERE i.is_sellable = 1
+            ORDER BY i.id
+        """).fetchall()
+
+        # Find the latest valid price list for the selected country
         price_list_row = conn.execute("""
-            SELECT pl.id, pl.currency_id, c.code as currency_code, co.id as country_id
+            SELECT pl.id, pl.currency_id, c.code as price_list_currency_code, co.id as country_id, co.code as origin_country_code
             FROM price_list pl
             JOIN currency c ON pl.currency_id = c.id
             JOIN country co ON pl.country_id = co.id
             WHERE (? IS NULL OR co.code = ?)
-              AND (? IS NULL OR c.code = ?)
               AND (pl.valid_from IS NULL OR pl.valid_from <= DATE('now'))
               AND (pl.valid_to IS NULL OR pl.valid_to >= DATE('now'))
             ORDER BY pl.valid_from DESC
             LIMIT 1
-        """, (country_code, country_code, currency_code, currency_code)).fetchone()
+        """, (country_code, country_code)).fetchone()
         price_list_id = price_list_row["id"] if price_list_row else None
         country_id = price_list_row["country_id"] if price_list_row else None
+        origin_country_code = price_list_row["origin_country_code"] if price_list_row else None
+        price_list_currency_code = price_list_row["price_list_currency_code"] if price_list_row else None
 
-        # Only fetch items from the selected price list
-        result = conn.execute("""
+        # Get conversion rates
+        selected_currency = conn.execute("SELECT id, code, symbol, rel_to_usd FROM currency WHERE code = ?", (currency_code,)).fetchone()
+        price_list_currency = conn.execute("SELECT id, code, symbol, rel_to_usd FROM currency WHERE code = ?", (price_list_currency_code,)).fetchone()
+        conversion_factor = 1.0
+        if selected_currency and price_list_currency and selected_currency["code"] != price_list_currency["code"]:
+            conversion_factor = (selected_currency["rel_to_usd"] or 1.0) / (price_list_currency["rel_to_usd"] or 1.0)
+
+        # Get price list items and taxes for each item
+        item_map = {row["id"]: dict(row) for row in items}
+        price_items = conn.execute("""
             SELECT 
-                i.id, 
-                i.name, 
-                i.sku, 
-                i.vendor_id,
-                i.cost,
-                i.is_sellable,
-                i.is_digital,
-                i.is_assemblable,
-                i.is_disassemblable,
-                i.description,
-                i.service_window_id,
-                sw.timedelta AS window_period,
-                sw.unit_time AS window_unit,
-                cost_cur.code AS cost_currency_code,
-                i.cost_currency_id,
-                pli.price AS sales_price,
+                pli.item_id,
+                pli.price AS sales_price_raw,
                 sales_cur.code AS sales_currency_code,
                 sales_cur.symbol AS sales_currency_symbol,
-                i.image_url,
-                t.percent AS tax_percent,
-                t.label AS tax_label
+                pli.unit_id,
+                u.symbol AS unit_symbol,
+                u.name AS unit_name,
+                GROUP_CONCAT(t.percent) AS tax_percents,
+                GROUP_CONCAT(t.label) AS tax_labels,
+                GROUP_CONCAT(t.fixed_amount) AS tax_fixed_amounts,
+                GROUP_CONCAT(cur.code) AS tax_fixed_currencies,
+                GROUP_CONCAT(u2.symbol) AS tax_fixed_units
             FROM price_list_item pli
-            JOIN item i ON pli.item_id = i.id
-            LEFT JOIN service_window sw ON i.service_window_id = sw.id
-            LEFT JOIN currency cost_cur ON i.cost_currency_id = cost_cur.id
             JOIN price_list pl ON pli.price_list_id = pl.id
             JOIN currency sales_cur ON pl.currency_id = sales_cur.id
-            LEFT JOIN item_hs_country ihc ON ihc.item_id = i.id AND ihc.country_id = ?
-            LEFT JOIN hs_country_tax hct ON hct.hs_code_id = ihc.hs_code_id AND hct.country_id = ?
+            LEFT JOIN unit u ON pli.unit_id = u.id
+            LEFT JOIN hs_country_tax hct ON hct.hs_code_id = (
+                SELECT hs_code_id FROM item_hs_country WHERE item_id = pli.item_id AND country_id = ?
+            ) AND hct.country_id = ?
             LEFT JOIN tax t ON t.id = hct.tax_id
+            LEFT JOIN currency cur ON t.fixed_currency_id = cur.id
+            LEFT JOIN unit u2 ON t.fixed_unit_id = u2.id
             WHERE pli.price_list_id = ?
-            ORDER BY i.id
+            GROUP BY pli.item_id
         """, (country_id, country_id, price_list_id)).fetchall()
-        return [dict(row) for row in result]
-    
+
+        for pi in price_items:
+            item = item_map.get(pi["item_id"])
+            if item:
+                # Set price and currency
+                price = pi["sales_price_raw"]
+                if conversion_factor != 1.0 and price is not None:
+                    price = round(price * conversion_factor, 2)
+                # Calculate taxes
+                tax_percents = [float(x) for x in (pi["tax_percents"] or "").split(",") if x]
+                tax_fixeds = [float(x) for x in (pi["tax_fixed_amounts"] or "").split(",") if x]
+                tax_total = sum(price * (p / 100) for p in tax_percents) + sum(tax_fixeds)
+                price_incl_tax = price + tax_total if price is not None else None
+                item["sales_price_incl_tax"] = price_incl_tax
+                item["unit_symbol"] = pi["unit_symbol"]
+                item["unit_name"] = pi["unit_name"]
+                item["sales_price"] = price
+                item["sales_currency_code"] = selected_currency["code"] if selected_currency else pi["sales_currency_code"]
+                item["sales_currency_symbol"] = selected_currency["symbol"] if selected_currency else pi["sales_currency_symbol"]
+                # Taxes
+                item["tax_percents"] = [float(x) for x in (pi["tax_percents"] or "").split(",") if x]
+                item["tax_labels"] = [x for x in (pi["tax_labels"] or "").split(",") if x]
+                item["tax_fixed_amounts"] = [float(x) for x in (pi["tax_fixed_amounts"] or "").split(",") if x]
+                item["tax_fixed_currencies"] = [x for x in (pi["tax_fixed_currencies"] or "").split(",") if x]
+                item["tax_fixed_units"] = [x for x in (pi["tax_fixed_units"] or "").split(",") if x]
+            else:
+                continue
+
+        # For items without price list item, set price/tax fields to None/empty
+        for item in item_map.values():
+            if "sales_price" not in item:
+                item["sales_price"] = None
+                item["sales_currency_code"] = None
+                item["sales_currency_symbol"] = None
+                item["tax_percents"] = []
+                item["tax_labels"] = []
+                item["tax_fixed_amounts"] = []
+                item["tax_fixed_currencies"] = []
+                item["tax_fixed_units"] = []
+
+        return list(item_map.values())
 
 @router.get("/items/by-sku/{sku}", tags=["Catalog"])
 def get_item_by_sku(sku: str):
@@ -465,6 +516,13 @@ def get_item(item_id: int):
         if not result:
             raise HTTPException(status_code=404, detail="Item not found")
         return dict(result)
+    
+
+@router.get("/units", tags=["Catalog"])
+def get_units():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT symbol, category FROM unit").fetchall()
+        return {row["symbol"]: row["category"] for row in rows}
     
 
 @router.get("/country-info", response_class=JSONResponse)
@@ -558,6 +616,11 @@ def book_service_booking(booking_id: int, req: BookingRequest):
         return {"message": "Booking confirmed"}
 
 
+@router.get("/currency-rates", tags=["Catalog"])
+def get_currency_rates():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT code, rel_to_usd FROM currency").fetchall()
+        return {row["code"]: row["rel_to_usd"] for row in rows}
 
 # @router.post("/service-bookings", tags=["Service"])
 # def create_service_booking(data: ServiceBookingCreate):
