@@ -5,6 +5,7 @@ from api import sales_router, purchase_router, returns_router, warehouse_router,
 from contextlib import asynccontextmanager
 from database import initialize_database
 from dotenv import load_dotenv
+import os
 
 load_dotenv()  # loads environmental variables from .env file
 
@@ -17,8 +18,11 @@ app = FastAPI(
     lifespan=lifespan,
     )
 
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Serve static files (css, js, images, etc.)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 app.include_router(sales_router)
