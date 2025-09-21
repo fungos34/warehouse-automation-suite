@@ -3,9 +3,12 @@ from passlib.context import CryptContext
 from fastapi import HTTPException, Depends
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
-SECRET_KEY = "773051d7-3f96-4aea-9218-2392f16c33bf"  # Use a strong random key in production!
+SECRET_KEY = os.environ.get("SECRET_ENCRYPTION_KEY")  # Use a strong random key in production!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
