@@ -3358,6 +3358,231 @@ FROM stock s
 LEFT JOIN lot l ON s.lot_id = l.id
 WHERE s.quantity - s.reserved_quantity > 0;
 
+-- INDEXES 
+
+-- Indexes for foreign keys and unique columns
+
+CREATE INDEX idx_bom_line_bom_id ON bom_line(bom_id);
+CREATE INDEX idx_bom_line_item_id ON bom_line(item_id);
+CREATE INDEX idx_bom_line_lot_id ON bom_line(lot_id);
+
+CREATE INDEX idx_item_hs_country_item_id ON item_hs_country(item_id);
+CREATE INDEX idx_item_hs_country_hs_code_id ON item_hs_country(hs_code_id);
+CREATE INDEX idx_item_hs_country_country_id ON item_hs_country(country_id);
+
+CREATE INDEX idx_hs_country_tax_hs_code_id ON hs_country_tax(hs_code_id);
+CREATE INDEX idx_hs_country_tax_country_id ON hs_country_tax(country_id);
+CREATE INDEX idx_hs_country_tax_tax_id ON hs_country_tax(tax_id);
+
+CREATE INDEX idx_tax_fixed_currency_id ON tax(fixed_currency_id);
+CREATE INDEX idx_tax_fixed_unit_id ON tax(fixed_unit_id);
+
+CREATE INDEX idx_unit_conversion_from_unit_id ON unit_conversion(from_unit_id);
+CREATE INDEX idx_unit_conversion_to_unit_id ON unit_conversion(to_unit_id);
+
+CREATE INDEX idx_price_list_currency_id ON price_list(currency_id);
+CREATE INDEX idx_price_list_country_id ON price_list(country_id);
+
+CREATE INDEX idx_price_list_item_price_list_id ON price_list_item(price_list_id);
+CREATE INDEX idx_price_list_item_item_id ON price_list_item(item_id);
+CREATE INDEX idx_price_list_item_unit_id ON price_list_item(unit_id);
+CREATE INDEX idx_price_list_item_composite ON price_list_item(price_list_id, item_id, unit_id);
+
+CREATE INDEX idx_item_route_id ON item(route_id);
+CREATE INDEX idx_item_vendor_id ON item(vendor_id);
+CREATE INDEX idx_item_bom_id ON item(bom_id);
+CREATE INDEX idx_item_service_window_id ON item(service_window_id);
+
+CREATE INDEX idx_lot_item_id ON lot(item_id);
+
+CREATE INDEX idx_carrier_label_mo_id ON carrier_label(mo_id);
+CREATE INDEX idx_carrier_label_lot_id ON carrier_label(lot_id);
+CREATE INDEX idx_carrier_label_carrier_id ON carrier_label(carrier_id);
+CREATE INDEX idx_carrier_label_sender_id ON carrier_label(sender_id);
+CREATE INDEX idx_carrier_label_recipient_id ON carrier_label(recipient_id);
+
+CREATE INDEX idx_country_currency_id ON country(currency_id);
+CREATE INDEX idx_country_vat_standard ON country(vat_standard);
+CREATE INDEX idx_country_language_id ON country(language_id);
+
+CREATE INDEX idx_partner_country_id ON partner(country_id);
+CREATE INDEX idx_partner_billing_country_id ON partner(billing_country_id);
+CREATE INDEX idx_partner_language_id ON partner(language_id);
+
+CREATE INDEX idx_service_hours_item_id ON service_hours(item_id);
+CREATE INDEX idx_service_hours_lot_id ON service_hours(lot_id);
+
+CREATE INDEX idx_service_exception_item_id ON service_exception(item_id);
+CREATE INDEX idx_service_exception_lot_id ON service_exception(lot_id);
+
+CREATE INDEX idx_service_booking_partner_id ON service_booking(partner_id);
+CREATE INDEX idx_service_booking_item_id ON service_booking(item_id);
+CREATE INDEX idx_service_booking_lot_id ON service_booking(lot_id);
+CREATE INDEX idx_service_booking_service_window_id ON service_booking(service_window_id);
+
+CREATE INDEX idx_payment_partner_id ON payment(partner_id);
+CREATE INDEX idx_payment_service_booking_id ON payment(service_booking_id);
+CREATE INDEX idx_payment_currency_id ON payment(currency_id);
+
+CREATE INDEX idx_company_partner_id ON company(partner_id);
+
+CREATE INDEX idx_user_partner_id ON user(partner_id);
+CREATE INDEX idx_user_company_id ON user(company_id);
+
+CREATE INDEX idx_subscription_item_id ON subscription(item_id);
+CREATE INDEX idx_subscription_lot_id ON subscription(lot_id);
+CREATE INDEX idx_subscription_partner_id ON subscription(partner_id);
+CREATE INDEX idx_subscription_service_window_id ON subscription(service_window_id);
+
+CREATE INDEX idx_subscription_line_subscription_id ON subscription_line(subscription_id);
+CREATE INDEX idx_subscription_line_sale_order_id ON subscription_line(sale_order_id);
+
+CREATE INDEX idx_warehouse_company_id ON warehouse(company_id);
+
+CREATE INDEX idx_location_warehouse_id ON location(warehouse_id);
+CREATE INDEX idx_location_partner_id ON location(partner_id);
+
+CREATE INDEX idx_location_zone_location_id ON location_zone(location_id);
+CREATE INDEX idx_location_zone_zone_id ON location_zone(zone_id);
+
+CREATE INDEX idx_stock_item_id ON stock(item_id);
+CREATE INDEX idx_stock_location_id ON stock(location_id);
+CREATE INDEX idx_stock_lot_id ON stock(lot_id);
+
+CREATE INDEX idx_stock_adjustment_item_id ON stock_adjustment(item_id);
+CREATE INDEX idx_stock_adjustment_location_id ON stock_adjustment(location_id);
+CREATE INDEX idx_stock_adjustment_lot_id ON stock_adjustment(lot_id);
+CREATE INDEX idx_stock_adjustment_partner_id ON stock_adjustment(partner_id);
+CREATE INDEX idx_stock_adjustment_route_id ON stock_adjustment(route_id);
+
+CREATE INDEX idx_picking_source_id ON picking(source_id);
+CREATE INDEX idx_picking_target_id ON picking(target_id);
+CREATE INDEX idx_picking_partner_id ON picking(partner_id);
+CREATE INDEX idx_picking_trigger_id ON picking(trigger_id);
+
+CREATE INDEX idx_move_item_id ON move(item_id);
+CREATE INDEX idx_move_lot_id ON move(lot_id);
+CREATE INDEX idx_move_source_id ON move(source_id);
+CREATE INDEX idx_move_target_id ON move(target_id);
+CREATE INDEX idx_move_source_location_id ON move(source_location_id);
+CREATE INDEX idx_move_target_location_id ON move(target_location_id);
+CREATE INDEX idx_move_trigger_id ON move(trigger_id);
+CREATE INDEX idx_move_picking_id ON move(picking_id);
+CREATE INDEX idx_move_route_id ON move(route_id);
+CREATE INDEX idx_move_rule_id ON move(rule_id);
+
+CREATE INDEX idx_move_line_move_id ON move_line(move_id);
+CREATE INDEX idx_move_line_item_id ON move_line(item_id);
+CREATE INDEX idx_move_line_source_id ON move_line(source_id);
+CREATE INDEX idx_move_line_target_id ON move_line(target_id);
+CREATE INDEX idx_move_line_lot_id ON move_line(lot_id);
+
+CREATE INDEX idx_quotation_partner_id ON quotation(partner_id);
+CREATE INDEX idx_quotation_currency_id ON quotation(currency_id);
+CREATE INDEX idx_quotation_tax_id ON quotation(tax_id);
+CREATE INDEX idx_quotation_discount_id ON quotation(discount_id);
+CREATE INDEX idx_quotation_price_list_id ON quotation(price_list_id);
+
+CREATE INDEX idx_quotation_line_quotation_id ON quotation_line(quotation_id);
+CREATE INDEX idx_quotation_line_item_id ON quotation_line(item_id);
+CREATE INDEX idx_quotation_line_lot_id ON quotation_line(lot_id);
+CREATE INDEX idx_quotation_line_route_id ON quotation_line(route_id);
+CREATE INDEX idx_quotation_line_currency_id ON quotation_line(currency_id);
+CREATE INDEX idx_quotation_line_price_list_id ON quotation_line(price_list_id);
+
+CREATE INDEX idx_sale_order_partner_id ON sale_order(partner_id);
+CREATE INDEX idx_sale_order_currency_id ON sale_order(currency_id);
+CREATE INDEX idx_sale_order_tax_id ON sale_order(tax_id);
+CREATE INDEX idx_sale_order_discount_id ON sale_order(discount_id);
+CREATE INDEX idx_sale_order_price_list_id ON sale_order(price_list_id);
+CREATE INDEX idx_sale_order_quotation_id ON sale_order(quotation_id);
+
+CREATE INDEX idx_order_line_order_id ON order_line(order_id);
+CREATE INDEX idx_order_line_item_id ON order_line(item_id);
+CREATE INDEX idx_order_line_lot_id ON order_line(lot_id);
+CREATE INDEX idx_order_line_route_id ON order_line(route_id);
+CREATE INDEX idx_order_line_currency_id ON order_line(currency_id);
+CREATE INDEX idx_order_line_price_list_id ON order_line(price_list_id);
+
+CREATE INDEX idx_purchase_order_partner_id ON purchase_order(partner_id);
+CREATE INDEX idx_purchase_order_currency_id ON purchase_order(currency_id);
+CREATE INDEX idx_purchase_order_tax_id ON purchase_order(tax_id);
+CREATE INDEX idx_purchase_order_discount_id ON purchase_order(discount_id);
+
+CREATE INDEX idx_purchase_order_line_purchase_order_id ON purchase_order_line(purchase_order_id);
+CREATE INDEX idx_purchase_order_line_item_id ON purchase_order_line(item_id);
+CREATE INDEX idx_purchase_order_line_lot_id ON purchase_order_line(lot_id);
+CREATE INDEX idx_purchase_order_line_route_id ON purchase_order_line(route_id);
+CREATE INDEX idx_purchase_order_line_currency_id ON purchase_order_line(currency_id);
+
+CREATE INDEX idx_transfer_order_partner_id ON transfer_order(partner_id);
+
+CREATE INDEX idx_transfer_order_line_transfer_order_id ON transfer_order_line(transfer_order_id);
+CREATE INDEX idx_transfer_order_line_item_id ON transfer_order_line(item_id);
+CREATE INDEX idx_transfer_order_line_lot_id ON transfer_order_line(lot_id);
+CREATE INDEX idx_transfer_order_line_target_zone_id ON transfer_order_line(target_zone_id);
+CREATE INDEX idx_transfer_order_line_route_id ON transfer_order_line(route_id);
+
+CREATE INDEX idx_return_order_partner_id ON return_order(partner_id);
+CREATE INDEX idx_return_order_carrier_id ON return_order(carrier_id);
+
+CREATE INDEX idx_return_line_return_order_id ON return_line(return_order_id);
+CREATE INDEX idx_return_line_item_id ON return_line(item_id);
+CREATE INDEX idx_return_line_lot_id ON return_line(lot_id);
+CREATE INDEX idx_return_line_refund_currency_id ON return_line(refund_currency_id);
+CREATE INDEX idx_return_line_refund_tax_id ON return_line(refund_tax_id);
+CREATE INDEX idx_return_line_refund_discount_id ON return_line(refund_discount_id);
+
+CREATE INDEX idx_manufacturing_order_partner_id ON manufacturing_order(partner_id);
+CREATE INDEX idx_manufacturing_order_item_id ON manufacturing_order(item_id);
+CREATE INDEX idx_manufacturing_order_trigger_id ON manufacturing_order(trigger_id);
+CREATE INDEX idx_manufacturing_order_location_id ON manufacturing_order(manufacturing_location_id);
+CREATE INDEX idx_manufacturing_order_zone_id ON manufacturing_order(manufacturing_zone_id);
+
+CREATE INDEX idx_unbuild_order_partner_id ON unbuild_order(partner_id);
+CREATE INDEX idx_unbuild_order_item_id ON unbuild_order(item_id);
+CREATE INDEX idx_unbuild_order_lot_id ON unbuild_order(lot_id);
+CREATE INDEX idx_unbuild_order_trigger_id ON unbuild_order(trigger_id);
+CREATE INDEX idx_unbuild_order_location_id ON unbuild_order(unbuild_location_id);
+CREATE INDEX idx_unbuild_order_zone_id ON unbuild_order(unbuild_zone_id);
+
+CREATE INDEX idx_rule_route_id ON rule(route_id);
+CREATE INDEX idx_rule_source_id ON rule(source_id);
+CREATE INDEX idx_rule_target_id ON rule(target_id);
+
+CREATE INDEX idx_route_name ON route(name);
+
+CREATE INDEX idx_trigger_trigger_item_id ON trigger(trigger_item_id);
+CREATE INDEX idx_trigger_trigger_zone_id ON trigger(trigger_zone_id);
+CREATE INDEX idx_trigger_trigger_route_id ON trigger(trigger_route_id);
+CREATE INDEX idx_trigger_trigger_lot_id ON trigger(trigger_lot_id);
+CREATE INDEX idx_trigger_trigger_location_id ON trigger(trigger_location_id);
+
+CREATE INDEX idx_rule_trigger_rule_id ON rule_trigger(rule_id);
+CREATE INDEX idx_rule_trigger_trigger_id ON rule_trigger(trigger_id);
+CREATE INDEX idx_rule_trigger_move_id ON rule_trigger(move_id);
+
+CREATE INDEX idx_intervention_move_id ON intervention(move_id);
+
+CREATE INDEX idx_packing_policy_action ON packing_policy(action);
+CREATE INDEX idx_packing_policy_carrier_id ON packing_policy(carrier_id);
+CREATE INDEX idx_packing_policy_recipient_id ON packing_policy(recipient_id);
+CREATE INDEX idx_packing_policy_sender_id ON packing_policy(sender_id);
+
+CREATE INDEX idx_packing_question_carrier_id ON packing_question(carrier_id);
+CREATE INDEX idx_packing_question_recipient_id ON packing_question(recipient_id);
+CREATE INDEX idx_packing_question_sender_id ON packing_question(sender_id);
+
+CREATE INDEX idx_dropshipping_policy_item_id ON dropshipping_policy(item_id);
+CREATE INDEX idx_dropshipping_policy_vendor_id ON dropshipping_policy(vendor_id);
+CREATE INDEX idx_dropshipping_policy_customer_id ON dropshipping_policy(customer_id);
+CREATE INDEX idx_dropshipping_policy_carrier_id ON dropshipping_policy(carrier_id);
+
+CREATE INDEX idx_dropshipping_question_item_id ON dropshipping_question(item_id);
+CREATE INDEX idx_dropshipping_question_vendor_id ON dropshipping_question(vendor_id);
+CREATE INDEX idx_dropshipping_question_customer_id ON dropshipping_question(customer_id);
+CREATE INDEX idx_dropshipping_question_carrier_id ON dropshipping_question(carrier_id);
+
 
 
 -- SEED DATA

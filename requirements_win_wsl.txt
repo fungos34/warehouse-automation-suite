@@ -1,3 +1,4 @@
+a2wsgi==1.10.10
 annotated-types==0.7.0
 anyio==4.9.0
 attrs==25.3.0
