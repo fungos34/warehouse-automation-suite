@@ -11,7 +11,6 @@ parsed = urlparse(base_url)
 host = parsed.hostname or "0.0.0.0"
 port = parsed.port or 8000
 
-import uvicorn
-
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("main:app", host=host, port=port, reload=True)
